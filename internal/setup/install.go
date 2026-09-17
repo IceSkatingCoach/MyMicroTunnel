@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/user"
 	"path/filepath"
 	"strings"
@@ -48,20 +47,34 @@ func Prerequisites(interactive bool) string {
 	return wgQuick
 }
 
+// PublicKeyPath records the public half where the user can read it. Public keys
+// are not secret, and keeping a copy outside /etc/wireguard is what lets a
+// re-run recognise an existing tunnel without asking for root first. Without
+// it, a non-interactive run would mint a new keypair, change ClientPublicKey,
+// replace the gateway, and then read a stale server key out of SSM.
+func PublicKeyPath() string {
+	return filepath.Join(AppConfigDir(), "client.pub")
+}
+
 // EnsureClientKey generates the private key on this machine and returns only
 // the public half. The private key never leaves the machine and is never a
 // CloudFormation parameter.
 func EnsureClientKey(interactive bool) string {
 	ui.Step("WireGuard client key")
 
+	if recorded, err := os.ReadFile(PublicKeyPath()); err == nil && len(recorded) > 0 {
+		ui.Done("Reusing the recorded public key")
+		return strings.TrimSpace(string(recorded))
+	}
+
 	if existing := sys.Run("/usr/bin/sudo", "-n", "cat", ClientKeyPath); existing.OK() && existing.Output != "" {
 		ui.Done("Reusing the existing key")
-		return sys.RunWithInput(existing.Output+"\n", "wg", "pubkey").Output
+		return recordPublicKey(sys.RunWithInput(existing.Output+"\n", "wg", "pubkey").Output)
 	}
 	if interactive {
 		if existing := sys.Run("/usr/bin/sudo", "cat", ClientKeyPath); existing.OK() && existing.Output != "" {
 			ui.Done("Reusing the existing key")
-			return sys.RunWithInput(existing.Output+"\n", "wg", "pubkey").Output
+			return recordPublicKey(sys.RunWithInput(existing.Output+"\n", "wg", "pubkey").Output)
 		}
 	}
 
@@ -80,7 +93,17 @@ func EnsureClientKey(interactive bool) string {
 	}
 	ui.Done("Key generated")
 
-	return sys.RunWithInput(private.Output+"\n", "wg", "pubkey").Output
+	return recordPublicKey(sys.RunWithInput(private.Output+"\n", "wg", "pubkey").Output)
+}
+
+func recordPublicKey(publicKey string) string {
+	if publicKey == "" {
+		ui.Fail("`wg pubkey` produced nothing.")
+	}
+	if err := os.MkdirAll(AppConfigDir(), 0o755); err == nil {
+		_ = os.WriteFile(PublicKeyPath(), []byte(publicKey+"\n"), 0o644)
+	}
+	return publicKey
 }
 
 func stagingDir() string {
@@ -230,11 +253,19 @@ func InstallApp(repoRoot string) {
 	menubarDir := filepath.Join(repoRoot, "menubar")
 	if !sys.Exists(menubarDir) {
 		ui.Step("Menu bar app")
-		if !sys.Exists(InstalledAppPath) {
-			ui.Fail("%s is missing and there are no sources to build it from.", InstalledAppPath)
+		if sys.Exists(InstalledAppPath) {
+			ui.Done("Already installed at %s", InstalledAppPath)
+			return
 		}
-		ui.Done("Already installed at %s", InstalledAppPath)
-		return
+		// Running from inside a bundle that is not in /Applications yet: the
+		// app can install itself rather than declaring the situation hopeless.
+		if bundle := enclosingBundle(); bundle != "" {
+			if result := sys.Run("cp", "-R", bundle, "/Applications/"); result.OK() {
+				ui.Done("Copied %s to %s", bundle, InstalledAppPath)
+				return
+			}
+		}
+		ui.Fail("%s is missing and there are no sources to build it from.", InstalledAppPath)
 	}
 
 	ui.Step("Building the menu bar app")
@@ -331,20 +362,44 @@ func CurrentUsername() string {
 // RepoRoot locates the checkout when running from source, and returns "" when
 // running from the installed package.
 func RepoRoot() string {
-	executable, err := exec.LookPath(os.Args[0])
+	// os.Executable rather than os.Args[0]: under sudo, and when invoked
+	// through a symlink or from inside the app bundle, argv[0] is not a path
+	// that can be walked back to the checkout.
+	executable, err := os.Executable()
 	if err != nil {
 		return ""
 	}
-	absolute, err := filepath.Abs(executable)
-	if err != nil {
-		return ""
+	resolved, err := filepath.EvalSymlinks(executable)
+	if err == nil {
+		executable = resolved
 	}
-	directory := filepath.Dir(absolute)
+	directory := filepath.Dir(executable)
 	for attempt := 0; attempt < 4; attempt++ {
 		if sys.Exists(filepath.Join(directory, "menubar")) && sys.Exists(filepath.Join(directory, "infra")) {
 			return directory
 		}
 		directory = filepath.Dir(directory)
+	}
+	return ""
+}
+
+// enclosingBundle returns the .app this binary is running inside, or "" when it
+// is a plain command-line build.
+func enclosingBundle() string {
+	executable, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	directory := filepath.Dir(executable)
+	for attempt := 0; attempt < 4; attempt++ {
+		if strings.HasSuffix(directory, ".app") {
+			return directory
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+		directory = parent
 	}
 	return ""
 }

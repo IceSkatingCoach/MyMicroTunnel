@@ -72,6 +72,7 @@ Flags for install:
   --port NUMBER
   --client-ip ADDRESS
   --gateway-ip ADDRESS
+  --client-public-key KEY  reuse a known key instead of generating one
   --login-item           register the app to open at login`)
 }
 
@@ -95,6 +96,7 @@ func runInstall(args []string) {
 	servicePort := flags.String("port", defaults.ServicePort, "local service port")
 	clientAddress := flags.String("client-ip", defaults.ClientAddress, "tunnel address of this machine")
 	gatewayAddress := flags.String("gateway-ip", defaults.GatewayAddress, "tunnel address of the gateway")
+	clientPublicKeyFlag := flags.String("client-public-key", "", "reuse a known WireGuard public key instead of reading or generating one")
 
 	_ = flags.Parse(args)
 	ui.SetJSON(*asJSON)
@@ -157,7 +159,13 @@ func runInstall(args []string) {
 			}
 		}
 
-		clientPublicKey := setup.EnsureClientKey(interactive)
+		clientPublicKey := *clientPublicKeyFlag
+		if clientPublicKey == "" {
+			clientPublicKey = setup.EnsureClientKey(interactive)
+		} else {
+			ui.Step("WireGuard client key")
+			ui.Done("Using the key supplied on the command line")
+		}
 		setup.Deploy(ctx, client, &settings, clientPublicKey)
 
 		if *settingsPath != "" {
