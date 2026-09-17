@@ -30,16 +30,16 @@ type Options struct {
 func Prerequisites(interactive bool) string {
 	ui.Step("Checking prerequisites")
 
-	wgQuick := sys.Which("wg-quick")
+	wgQuick := sys.Tool("wg-quick")
 	if wgQuick == "" {
 		if !interactive {
 			ui.Fail("wg-quick is not installed. Install it with `brew install wireguard-tools`.")
 		}
 		ui.Info("WireGuard tools are missing; installing with Homebrew.")
-		if sys.RunInteractive("brew", "install", "wireguard-tools") != 0 {
+		if sys.RunInteractive(sys.Tool("brew"), "install", "wireguard-tools") != 0 {
 			ui.Fail("`brew install wireguard-tools` failed.")
 		}
-		if wgQuick = sys.Which("wg-quick"); wgQuick == "" {
+		if wgQuick = sys.Tool("wg-quick"); wgQuick == "" {
 			ui.Fail("wg-quick is still not on PATH after installing.")
 		}
 	}
@@ -69,16 +69,16 @@ func EnsureClientKey(interactive bool) string {
 
 	if existing := sys.Run("/usr/bin/sudo", "-n", "cat", ClientKeyPath); existing.OK() && existing.Output != "" {
 		ui.Done("Reusing the existing key")
-		return recordPublicKey(sys.RunWithInput(existing.Output+"\n", "wg", "pubkey").Output)
+		return recordPublicKey(sys.RunWithInput(existing.Output+"\n", sys.Tool("wg"), "pubkey").Output)
 	}
 	if interactive {
 		if existing := sys.Run("/usr/bin/sudo", "cat", ClientKeyPath); existing.OK() && existing.Output != "" {
 			ui.Done("Reusing the existing key")
-			return recordPublicKey(sys.RunWithInput(existing.Output+"\n", "wg", "pubkey").Output)
+			return recordPublicKey(sys.RunWithInput(existing.Output+"\n", sys.Tool("wg"), "pubkey").Output)
 		}
 	}
 
-	private := sys.Run("wg", "genkey")
+	private := sys.Run(sys.Tool("wg"), "genkey")
 	if !private.OK() || private.Output == "" {
 		ui.Fail("`wg genkey` produced nothing.")
 	}
@@ -93,7 +93,7 @@ func EnsureClientKey(interactive bool) string {
 	}
 	ui.Done("Key generated")
 
-	return recordPublicKey(sys.RunWithInput(private.Output+"\n", "wg", "pubkey").Output)
+	return recordPublicKey(sys.RunWithInput(private.Output+"\n", sys.Tool("wg"), "pubkey").Output)
 }
 
 func recordPublicKey(publicKey string) string {

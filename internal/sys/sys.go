@@ -114,3 +114,39 @@ func WriteAsRootNonInteractive(content, destination string, mode os.FileMode) er
 	}
 	return os.Chown(destination, 0, 0)
 }
+
+// homebrewDirs are searched in addition to PATH. A GUI app is launched by
+// launchd, not by a shell, so it inherits a bare PATH of /usr/bin:/bin:
+// /usr/sbin:/sbin — Homebrew's directory is not on it, and a tool that is
+// plainly installed looks missing.
+var homebrewDirs = []string{
+	"/opt/homebrew/bin", // Apple silicon
+	"/usr/local/bin",    // Intel, and older installs
+}
+
+// Tool resolves a command to an absolute path, falling back to the well-known
+// Homebrew locations when PATH does not have it.
+func Tool(name string) string {
+	if path := Which(name); path != "" {
+		return path
+	}
+	for _, directory := range homebrewDirs {
+		candidate := filepath.Join(directory, name)
+		if info, err := os.Stat(candidate); err == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// ExtendPath adds the Homebrew directories to this process's PATH, so child
+// processes inherit them too. Called once at startup.
+func ExtendPath() {
+	current := os.Getenv("PATH")
+	for _, directory := range homebrewDirs {
+		if !strings.Contains(current, directory) {
+			current = current + ":" + directory
+		}
+	}
+	os.Setenv("PATH", current)
+}

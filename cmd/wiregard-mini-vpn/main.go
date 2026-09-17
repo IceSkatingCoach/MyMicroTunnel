@@ -28,6 +28,10 @@ import (
 )
 
 func main() {
+	// Must happen before anything looks for a tool: a GUI-launched process
+	// inherits launchd's bare PATH, not a shell's.
+	sys.ExtendPath()
+
 	if len(os.Args) < 2 {
 		runInstall(os.Args[1:])
 		return
