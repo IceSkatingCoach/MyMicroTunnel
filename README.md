@@ -1,50 +1,60 @@
-# Xprem VPN menu bar app
+# wiregard_mini_vpn
 
-A macOS status bar switch for the WireGuard tunnel created by
-`infra/cloudformation-xprem-onprem-vpn.yaml`. The tunnel carries traffic from
-the AWS Network Load Balancer behind `update.mobile.maragato.ca` to the xprem
-container running on this machine, and it is meant to be up only while the
-on-premises deployment should be reachable.
+A small WireGuard tunnel that lets an AWS Network Load Balancer publish a
+service running on a workstation, plus the macOS menu bar switch that raises
+and drops that tunnel on demand.
 
-The icon sits at the right of the menu bar, near the clock. It is a padlock
-shield: filled while the tunnel is up, outlined while it is down.
+It exists because `update.mobile.maragato.ca` is served by an
+[xprem](https://github.com/MercureTechnologies/xprem) container running on a
+laptop rather than on Fargate, and the laptop should only be reachable while
+someone wants it to be.
 
-## Build and install
-
-```sh
-make app       # builds build/XpremVpn.app
-make install   # copies it to /Applications
+```
+client ──TLS──▶ NLB :443 ──▶ 10.100.0.2:3000
+                              │
+                      VPC route 10.100.0.0/24
+                              ▼
+                      gateway instance (EIP)
+                              │  WireGuard
+                              ▼
+                      workstation 10.100.0.2 ──▶ xprem :3000
 ```
 
-One source file and `swiftc`; no Xcode project and no dependencies. The bundle
-is ad-hoc signed so macOS keeps a stable identity for it across rebuilds.
+## Why not AWS Site-to-Site VPN
 
-## Passwordless toggling
+An `AWS::EC2::CustomerGateway` needs a fixed public IP address, because AWS
+answers the IKE negotiation rather than starting it. The workstation sits
+behind a residential NAT with a dynamic address. AWS does support a
+certificate-based customer gateway with no address for exactly this case, but
+it requires an ACM Private CA at roughly USD 400 per month, an order of
+magnitude more than everything else here combined.
 
-`wg-quick` must run as root. The app calls it through `sudo -n`, so without the
-sudoers drop-in every toggle fails and the error appears in the menu instead of
-a password prompt.
+WireGuard inverts the direction. The workstation dials out to an Elastic IP, so
+no inbound port forward is needed on the home router, and `PersistentKeepalive`
+re-pins the tunnel after the ISP hands out a new address.
 
-```sh
-sudo install -m 0440 -o root -g wheel sudoers-xprem-vpn /etc/sudoers.d/xprem-vpn
-sudo visudo -c -f /etc/sudoers.d/xprem-vpn
-```
+## Layout
 
-Read `sudoers-xprem-vpn` before installing it: it grants passwordless root for
-two fixed command lines, and its safety depends on `/etc/wireguard/wg0.conf`
-staying root-owned and mode 0600.
+| Path | What it is |
+| --- | --- |
+| `infra/cloudformation-xprem-onprem-vpn.yaml` | The AWS side: NLB, TLS listener, ACM certificate, gateway instance, tunnel route, Route53 alias |
+| `menubar/` | The macOS status bar app that toggles the tunnel |
 
-## Start at login
+Each has its own notes: the CloudFormation template carries its deploy order
+and parameters in a header comment, and `menubar/README.md` covers building,
+installing, and the sudoers drop-in the app depends on.
 
-System Settings › General › Login Items › Open at Login › **+** ›
-`/Applications/XpremVpn.app`. The app itself starts nothing: opening it at
-login only puts the switch in the menu bar, it does not raise the tunnel.
+## Running cost
 
-## How connection state is detected
+Roughly USD 26/month: NLB about 16 plus LCUs, a `t4g.micro` gateway about 6,
+and an Elastic IP about 3.60.
 
-The app looks for the tunnel address `10.100.0.2` in `ifconfig` output every
-three seconds. That needs no privileges, unlike `wg show`, and it tracks
-tunnels raised or dropped from a terminal too.
+## Known limits
 
-Interface presence only proves `wg-quick` ran. **Test tunnel** pings the AWS
-side of the tunnel at `10.100.0.1` and proves packets actually cross.
+- The gateway is a single instance in a single availability zone. If it stops,
+  the hostname goes dark.
+- The tunnel does not survive a reboot on the workstation; the menu bar app is
+  a switch, not a supervisor.
+- The stack claims `update.mobile.maragato.ca`, the same hostname as the
+  Fargate stack in `maragato_xprem`. The two cannot be deployed together
+  without changing `ServiceDomainName` on one of them.

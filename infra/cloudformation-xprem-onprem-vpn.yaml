@@ -1,0 +1,417 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+# Network Load Balancer in AWS fronting an xprem deployment that runs on a
+# workstation outside AWS, reached over a WireGuard tunnel.
+#
+# WHY NOT AWS Site-to-Site VPN
+# ----------------------------
+# An AWS::EC2::CustomerGateway needs a fixed public IP address, because AWS is
+# the side that answers the IKE negotiation. The workstation sits behind a
+# residential NAT with a dynamic address, so that address is not usable as a
+# customer gateway. AWS does support a certificate-based customer gateway with
+# no IpAddress for exactly this case, but it requires an ACM Private CA at
+# roughly USD 400/month, which dwarfs everything else in this stack.
+#
+# WireGuard inverts the direction: the workstation dials out to a fixed Elastic
+# IP, so no inbound port forward is needed on the home router and a new ISP
+# lease just re-pins the tunnel on the next keepalive. The tunnel terminates on
+# a t4g.nano instance in the default VPC that forwards between the VPC and the
+# workstation.
+#
+# TRAFFIC PATH
+# ------------
+#   client -> NLB :443 (TLS terminated here)
+#          -> target 10.100.0.2:3000, an address outside the VPC CIDR
+#          -> VPC route 10.100.0.0/24 -> gateway instance ENI
+#          -> wg0 -> workstation -> Docker publishes xprem on :3000
+#
+# The gateway does no NAT. Replies leave the workstation with source
+# 10.100.0.2 and are routed back through the same instance, which is why the
+# instance has SourceDestCheck disabled.
+#
+# DEPLOY ORDER
+# ------------
+#   1. On the workstation, create the client keypair and hand the public half
+#      to this stack:
+#
+#        brew install wireguard-tools
+#        sudo mkdir -p /etc/wireguard && sudo chmod 700 /etc/wireguard
+#        wg genkey | sudo tee /etc/wireguard/client.key >/dev/null
+#        sudo chmod 600 /etc/wireguard/client.key
+#        sudo wg pubkey < /etc/wireguard/client.key
+#
+#   2. Deploy this stack, passing that public key as ClientPublicKey. The ACM
+#      certificate is DNS-validated against the zone owned by the DNS stack, so
+#      that stack must already be authoritative for maragato.ca.
+#
+#        aws cloudformation deploy \
+#          --stack-name xprem-onprem-vpn \
+#          --template-file infra/cloudformation-xprem-onprem-vpn.yaml \
+#          --capabilities CAPABILITY_IAM \
+#          --parameter-overrides ClientPublicKey=<key from step 1>
+#
+#   3. The gateway generates its own server keypair at boot and publishes the
+#      public half to SSM Parameter Store, so it never travels through a
+#      CloudFormation parameter. Write the workstation config from the two
+#      stack outputs:
+#
+#        aws ssm get-parameter --name /xprem/vpn/server-public-key \
+#          --query Parameter.Value --output text
+#
+#        [Interface]
+#        PrivateKey = <contents of /etc/wireguard/client.key>
+#        Address    = 10.100.0.2/32
+#        MTU        = 1380
+#
+#        [Peer]
+#        PublicKey  = <server public key from SSM>
+#        AllowedIPs = 10.100.0.0/24, 172.31.0.0/16
+#        Endpoint   = <GatewayPublicIp output>:51820
+#        PersistentKeepalive = 25
+#
+#      Save as /etc/wireguard/wg0.conf, then `sudo wg-quick up wg0`.
+#      PersistentKeepalive is what keeps the home NAT mapping alive and what
+#      re-registers the tunnel after the ISP changes the public address.
+#
+# COST
+# ----
+# NLB ~USD 16/month plus LCUs, t4g.nano ~USD 3/month, Elastic IP ~USD 3.60/month.
+
+Parameters:
+  DnsStackName:
+    Type: String
+    Default: xprem-dns
+    Description: Name of the deployed cloudformation-xprem-dns.yaml stack
+
+  ServiceDomainName:
+    Type: String
+    Default: update.mobile.maragato.ca
+    Description: >-
+      Public hostname served by this NLB. This is the same name that
+      cloudformation-xprem-service.yaml claims for its Fargate ALB, and the two
+      stacks cannot both hold it: the second one to deploy fails on a
+      duplicate Route53 record. That stack is not currently deployed, so this
+      one owns the name. Change this parameter before deploying the Fargate
+      stack alongside it.
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-047b226a8150b290a
+    Description: Default VPC, CIDR 172.31.0.0/16
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Default: subnet-0953ed3798a9a0a5e,subnet-0d3c79525d4a9a346,subnet-0d81ad853a719e494
+    Description: Public subnets of the default VPC, one per AZ, for the NLB nodes
+
+  GatewaySubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-0953ed3798a9a0a5e
+    Description: >-
+      Single public subnet holding the WireGuard gateway. The tunnel is a
+      single instance, so this is also the single point of failure for the
+      whole path.
+
+  RouteTableId:
+    Type: String
+    Default: rtb-0d7c42156a22d5ce2
+    Description: >-
+      Route table of the NLB subnets, which gets the 10.100.0.0/24 route to the
+      gateway. The default VPC uses one main route table for every subnet; a
+      VPC with per-subnet tables needs this route added to each of them.
+
+  VpcCidr:
+    Type: String
+    Default: 172.31.0.0/16
+    Description: Source range allowed to reach the tunnel, i.e. the NLB nodes
+
+  ClientPublicKey:
+    Type: String
+    Description: >-
+      WireGuard public key of the workstation, from `wg pubkey`. The private
+      half never leaves the workstation.
+
+  VpnCidr:
+    Type: String
+    Default: 10.100.0.0/24
+    Description: Tunnel subnet. Must not overlap the VPC or the home LAN.
+
+  GatewayVpnAddress:
+    Type: String
+    Default: 10.100.0.1
+    Description: Tunnel address of the gateway instance
+
+  ClientVpnAddress:
+    Type: String
+    Default: 10.100.0.2
+    Description: >-
+      Tunnel address of the workstation. This is the NLB target, which is legal
+      because IP target groups accept RFC1918 addresses outside the VPC CIDR.
+
+  ServicePort:
+    Type: Number
+    Default: 3000
+    Description: Port the xprem container publishes on the workstation
+
+  ServerPublicKeyParameter:
+    Type: String
+    Default: /xprem/vpn/server-public-key
+    Description: SSM parameter the gateway writes its generated public key to
+
+  GatewayInstanceType:
+    Type: String
+    Default: t4g.micro
+    Description: >-
+      Not t4g.nano. Its 512 MB is not enough for `dnf install` to parse the
+      AL2023 repository metadata: the first attempt at this stack died with
+      "Killed" on that line, leaving no /etc/wireguard at all. The swap file in
+      UserData is a second guard against the same failure.
+
+  GatewayImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-arm64
+    Description: >-
+      Latest AL2023 arm64 AMI. Kernel 6.1 carries WireGuard in-tree, so only
+      the userspace tooling is installed at boot.
+
+Resources:
+  # --- Tunnel gateway ------------------------------------------------------
+  GatewaySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: WireGuard gateway for the on-premises xprem deployment
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        # Open to the internet on purpose: the workstation's source address
+        # changes, so it cannot be pinned here. Authentication is the
+        # WireGuard key exchange, and an unauthenticated packet is dropped
+        # without a reply.
+        - IpProtocol: udp
+          FromPort: 51820
+          ToPort: 51820
+          CidrIp: 0.0.0.0/0
+          Description: WireGuard from the workstation
+        # Forwarded traffic crosses this ENI, so the security group has to
+        # admit the NLB's health checks and requests as well.
+        - IpProtocol: tcp
+          FromPort: !Ref ServicePort
+          ToPort: !Ref ServicePort
+          CidrIp: !Ref VpcCidr
+          Description: NLB nodes towards the tunnelled xprem
+
+  GatewayRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # Session Manager, so the instance needs no SSH key and no port 22.
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: publish-wireguard-public-key
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:PutParameter
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ServerPublicKeyParameter}'
+
+  GatewayInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref GatewayRole
+
+  GatewayInstance:
+    Type: AWS::EC2::Instance
+    # Without this, a UserData that dies halfway still reports CREATE_COMPLETE
+    # and the breakage only surfaces later as a tunnel that never comes up.
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT10M
+        Count: 1
+    Properties:
+      ImageId: !Ref GatewayImageId
+      InstanceType: !Ref GatewayInstanceType
+      SubnetId: !Ref GatewaySubnetId
+      IamInstanceProfile: !Ref GatewayInstanceProfile
+      SecurityGroupIds:
+        - !Ref GatewaySecurityGroup
+      # Required: the instance both sends and receives packets addressed to
+      # 10.100.0.2, which is not one of its own addresses.
+      SourceDestCheck: false
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-wireguard-gateway'
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+
+          # dnf's metadata parse is the memory high-water mark of this boot.
+          dd if=/dev/zero of=/swapfile bs=1M count=1024
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+          dnf -y install wireguard-tools aws-cfn-bootstrap
+          trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource GatewayInstance --region ${AWS::Region} || true' ERR
+
+          echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-wireguard.conf
+          sysctl --system
+
+          mkdir -p /etc/wireguard
+          chmod 700 /etc/wireguard
+          umask 077
+          wg genkey > /etc/wireguard/server.key
+          wg pubkey < /etc/wireguard/server.key > /etc/wireguard/server.pub
+
+          cat > /etc/wireguard/wg0.conf <<EOF
+          [Interface]
+          Address = ${GatewayVpnAddress}/24
+          ListenPort = 51820
+          PrivateKey = $(cat /etc/wireguard/server.key)
+
+          [Peer]
+          PublicKey = ${ClientPublicKey}
+          AllowedIPs = ${ClientVpnAddress}/32
+          EOF
+
+          systemctl enable --now wg-quick@wg0
+
+          # The public key is published rather than passed in, so no private
+          # key is ever stored in a CloudFormation parameter. Its arrival is
+          # also the signal that the boot script got all the way through.
+          aws ssm put-parameter \
+            --region ${AWS::Region} \
+            --name ${ServerPublicKeyParameter} \
+            --type String \
+            --overwrite \
+            --value "$(cat /etc/wireguard/server.pub)"
+
+          /opt/aws/bin/cfn-signal -e 0 \
+            --stack ${AWS::StackName} \
+            --resource GatewayInstance \
+            --region ${AWS::Region}
+
+  GatewayEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref GatewayInstance
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-wireguard-endpoint'
+
+  # Sends the NLB's traffic for the tunnel subnet at the gateway's ENI.
+  VpnRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTableId
+      DestinationCidrBlock: !Ref VpnCidr
+      InstanceId: !Ref GatewayInstance
+
+  # --- TLS -----------------------------------------------------------------
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref ServiceDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref ServiceDomainName
+          HostedZoneId:
+            Fn::ImportValue: !Sub '${DnsStackName}-HostedZoneId'
+
+  # --- Load balancer -------------------------------------------------------
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internet-facing
+      Type: network
+      Subnets: !Ref SubnetIds
+      LoadBalancerAttributes:
+        # Mandatory here, not a tuning choice: a target registered with
+        # AvailabilityZone "all" is only reachable from every NLB node when
+        # cross-zone load balancing is on.
+        - Key: load_balancing.cross_zone.enabled
+          Value: 'true'
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref ServicePort
+      Targets:
+        - Id: !Ref ClientVpnAddress
+          Port: !Ref ServicePort
+          # "all" is what marks this as a target outside the VPC, reached over
+          # routing rather than sitting in one of the subnets.
+          AvailabilityZone: all
+      HealthCheckProtocol: HTTP
+      HealthCheckPath: /hc
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TlsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 443
+      Protocol: TLS
+      Certificates:
+        - CertificateArn: !Ref Certificate
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  # An NLB cannot redirect, so there is no port 80 listener. Plain HTTP to this
+  # hostname simply does not answer, which is the safer of the two options for
+  # a server that hands out signed update manifests.
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId:
+        Fn::ImportValue: !Sub '${DnsStackName}-HostedZoneId'
+      Name: !Sub '${ServiceDomainName}.'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt LoadBalancer.DNSName
+        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
+        EvaluateTargetHealth: false
+
+Outputs:
+  ServiceUrl:
+    Description: BASE_URL for the on-premises xprem deployment
+    Value: !Sub 'https://${ServiceDomainName}'
+
+  HealthCheckUrl:
+    Value: !Sub 'https://${ServiceDomainName}/hc'
+
+  GatewayPublicIp:
+    Description: WireGuard Endpoint for /etc/wireguard/wg0.conf on the workstation
+    Value: !Ref GatewayEip
+
+  ServerPublicKeyCommand:
+    Description: Reads the gateway's generated WireGuard public key
+    Value: !Sub 'aws ssm get-parameter --name ${ServerPublicKeyParameter} --query Parameter.Value --output text'
+
+  ClientVpnAddress:
+    Description: Tunnel address the workstation must assign to wg0
+    Value: !Ref ClientVpnAddress
+
+  LoadBalancerDnsName:
+    Value: !GetAtt LoadBalancer.DNSName
