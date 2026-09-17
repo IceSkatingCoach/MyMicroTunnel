@@ -13,20 +13,43 @@
 
 import AppKit
 
-enum Tunnel {
-    static let interfaceName = "wg0"
+/// Settings the installer writes, so one deployment's addresses and hostname
+/// are not compiled into the binary. The defaults match the CloudFormation
+/// stack's own defaults, which keeps a hand-built copy of the app working with
+/// no config file present.
+struct Tunnel: Decodable {
+    var interfaceName = "wg0"
 
     /// Address wg-quick assigns to this machine. Its presence on any utun
     /// interface is what the app treats as "connected" — cheaper than asking
     /// WireGuard, and it needs no privileges, unlike `wg show`.
-    static let clientAddress = "10.100.0.2"
+    var clientAddress = "10.100.0.2"
 
     /// Tunnel address of the AWS-side gateway, pinged by "Test tunnel".
-    static let gatewayAddress = "10.100.0.1"
+    var gatewayAddress = "10.100.0.1"
 
-    static let wgQuickPath = "/opt/homebrew/bin/wg-quick"
-    static let serviceUrl = URL(string: "https://update.mobile.maragato.ca/hc")!
+    var wgQuickPath = "/opt/homebrew/bin/wg-quick"
+    var healthCheckUrl = "https://update.mobile.maragato.ca/hc"
+
+    static let configURL = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/XpremVpn/config.json")
+
+    static let current: Tunnel = {
+        guard let data = try? Data(contentsOf: configURL),
+              let decoded = try? JSONDecoder().decode(Tunnel.self, from: data)
+        else {
+            return Tunnel()
+        }
+        return decoded
+    }()
+
+    var healthCheckURL: URL? { URL(string: healthCheckUrl) }
 }
+
+/// Read once at launch. Changing the deployment means re-running the installer,
+/// which rewrites the file and is expected to restart the app.
+let tunnel = Tunnel.current
 
 struct CommandResult {
     let status: Int32
@@ -95,7 +118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refreshState() {
         let result = run("/sbin/ifconfig", [])
-        isConnected = result.output.contains(Tunnel.clientAddress)
+        isConnected = result.output.contains(tunnel.clientAddress)
         updateStatusItemImage()
     }
 
@@ -124,7 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if isBusy {
             state = "Working…"
         } else if isConnected {
-            state = "Connected — \(Tunnel.clientAddress)"
+            state = "Connected — \(tunnel.clientAddress)"
         } else {
             state = "Disconnected"
         }
@@ -182,7 +205,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // wg-quick takes about a second; off the main thread so the menu bar
         // does not freeze while it runs.
         Task.detached(priority: .userInitiated) {
-            let result = run("/usr/bin/sudo", ["-n", Tunnel.wgQuickPath, subcommand, Tunnel.interfaceName])
+            let result = run("/usr/bin/sudo", ["-n", tunnel.wgQuickPath, subcommand, tunnel.interfaceName])
             await MainActor.run {
                 self.isBusy = false
                 self.lastError = result.succeeded ? nil : result.output
@@ -200,20 +223,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateStatusItemImage()
 
         Task.detached(priority: .userInitiated) {
-            let result = run("/sbin/ping", ["-c", "1", "-t", "3", Tunnel.gatewayAddress])
+            let result = run("/sbin/ping", ["-c", "1", "-t", "3", tunnel.gatewayAddress])
             await MainActor.run {
                 self.isBusy = false
                 self.updateStatusItemImage()
                 if result.succeeded {
                     self.report(
                         title: "Tunnel is up",
-                        message: "Gateway \(Tunnel.gatewayAddress) answered."
+                        message: "Gateway \(tunnel.gatewayAddress) answered."
                     )
                 } else {
                     self.lastError = result.output
                     self.report(
                         title: "Gateway did not answer",
-                        message: "The interface exists but \(Tunnel.gatewayAddress) is unreachable. "
+                        message: "The interface exists but \(tunnel.gatewayAddress) is unreachable. "
                             + "Reconnect to re-pin the tunnel after an address change."
                     )
                 }
@@ -222,7 +245,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openHealthCheck() {
-        NSWorkspace.shared.open(Tunnel.serviceUrl)
+        guard let url = tunnel.healthCheckURL else { return }
+        NSWorkspace.shared.open(url)
     }
 
     @objc private func quit() {

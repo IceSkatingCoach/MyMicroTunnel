@@ -33,12 +33,51 @@ WireGuard inverts the direction. The workstation dials out to an Elastic IP, so
 no inbound port forward is needed on the home router, and `PersistentKeepalive`
 re-pins the tunnel after the ISP hands out a new address.
 
+## Install
+
+```sh
+make install
+```
+
+One command from a clean machine. It asks for an AWS profile — or an access key
+and secret, which it stores as a new profile through the AWS CLI — then:
+
+1. checks for the AWS CLI, `wg-quick` and `swiftc`, installing WireGuard through
+   Homebrew if it is missing;
+2. generates the WireGuard private key locally and hands only the public half to
+   CloudFormation;
+3. deploys the stack and waits for the gateway to publish its own public key;
+4. writes `/etc/wireguard/wg0.conf` and the sudoers rule, both as root, asking
+   for your password;
+5. builds the menu bar app, installs it into `/Applications`, and offers to open
+   it at login;
+6. raises the tunnel, pings the gateway, waits for the load balancer target to
+   go healthy, and finally checks that the public hostname returns 200.
+
+It stops at the first step that fails and says which one, rather than reporting
+success on a half-built tunnel. Re-running it resumes: existing keys, stacks and
+files are reused instead of duplicated.
+
+Prerequisites it will not install for you: the AWS CLI (`brew install awscli`)
+and the Xcode command line tools (`xcode-select --install`). The AWS credentials
+need permission to create the stack's resources — EC2, ELBv2, ACM, Route53, SSM
+and IAM.
+
+```sh
+make uninstall
+```
+
+Removes the app, the login item, the sudoers rule and the local config without
+asking. The private key and the CloudFormation stack are only removed if you say
+yes to each.
+
 ## Layout
 
 | Path | What it is |
 | --- | --- |
 | `infra/cloudformation-xprem-onprem-vpn.yaml` | The AWS side: NLB, TLS listener, ACM certificate, gateway instance, tunnel route, Route53 alias |
 | `menubar/` | The macOS status bar app that toggles the tunnel |
+| `installer/` | `install.ts` and `uninstall.ts`, the one-command setup and teardown |
 
 Each has its own notes: the CloudFormation template carries its deploy order
 and parameters in a header comment, and `menubar/README.md` covers building,
