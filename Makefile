@@ -1,10 +1,15 @@
-# Node 22.6+ strips the installer's types on its own, so `make install` needs
-# no build step and no node_modules.
-install:
-	node installer/install.ts
+# The installer is a Go binary and the app is built with swiftc. Nothing here
+# needs Node, an AWS CLI, or an Xcode project.
 
-uninstall:
-	node installer/uninstall.ts
+install: engine
+	./build/wiregard-mini-vpn install
+
+uninstall: engine
+	./build/wiregard-mini-vpn uninstall
+
+engine:
+	mkdir -p build
+	go build -trimpath -ldflags "-s -w" -o build/wiregard-mini-vpn ./cmd/wiregard-mini-vpn
 
 app:
 	$(MAKE) -C menubar app
@@ -12,15 +17,19 @@ app:
 # Signs with the Developer ID identities if they are in the keychain, and says
 # what is missing if they are not.
 pkg:
-	node packaging/build-pkg.ts
+	go run ./cmd/build-pkg
 
 # PROFILE is a notarytool keychain profile created once with
 # `xcrun notarytool store-credentials`.
 pkg-notarized:
-	node packaging/build-pkg.ts --notarize $(PROFILE)
+	go run ./cmd/build-pkg --notarize $(PROFILE)
+
+test:
+	go vet ./...
+	gofmt -l .
 
 clean:
 	$(MAKE) -C menubar clean
 	rm -rf build
 
-.PHONY: install uninstall app pkg pkg-notarized clean
+.PHONY: install uninstall engine app pkg pkg-notarized test clean

@@ -95,6 +95,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// toggle instead of letting two of them overlap.
     private var isBusy = false
     private var lastError: String?
+    /// Held so the window is not deallocated the moment it is shown.
+    private var setupController: SetupWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // .accessory keeps the app out of the Dock and the app switcher; the
@@ -111,6 +113,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // down from a terminal, and cheap enough to ignore: one ifconfig call.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshState() }
+        }
+
+        // No config file means nothing has been deployed yet, so the first run
+        // opens setup instead of leaving a switch that toggles nothing.
+        if !FileManager.default.fileExists(atPath: Tunnel.configURL.path) {
+            openSetup()
         }
     }
 
@@ -181,6 +189,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         open.target = self
         menu.addItem(open)
 
+        let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: ",")
+        setup.target = self
+        setup.isEnabled = !isBusy
+        menu.addItem(setup)
+
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
@@ -247,6 +260,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func openHealthCheck() {
         guard let url = tunnel.healthCheckURL else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func openSetup() {
+        if setupController == nil {
+            setupController = SetupWindowController()
+        }
+        // An .accessory app has no windows of its own to come forward with.
+        NSApp.activate(ignoringOtherApps: true)
+        setupController?.showWindow(nil)
+        setupController?.window?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func quit() {
