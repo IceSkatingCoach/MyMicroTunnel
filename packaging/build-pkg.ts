@@ -255,6 +255,24 @@ function buildProduct(version: string, appSigned: boolean): string {
 function notarize(packagePath: string, keychainProfile: string): void {
   step("Notarizing");
 
+  // Checked before submitting, because notarytool otherwise uploads the package
+  // first and only then reports the missing credential.
+  const credentialCheck = run("xcrun", [
+    "notarytool", "history", "--keychain-profile", keychainProfile,
+  ]);
+  if (credentialCheck.status !== 0 && /No Keychain password item/i.test(credentialCheck.stderr)) {
+    fail(
+      `No notarytool credential named "${keychainProfile}". Create it once with:\n\n`
+        + `    xcrun notarytool store-credentials ${keychainProfile} \\\n`
+        + "      --apple-id <your-apple-id> \\\n"
+        + "      --team-id Z4FDTJHQP3 \\\n"
+        + "      --password <app-specific-password>\n\n"
+        + "  The app-specific password is generated at appleid.apple.com under\n"
+        + "  Sign-In and Security › App-Specific Passwords. It is not your Apple ID\n"
+        + "  password, and notarytool stores it in the keychain so this is a one-time step.",
+    );
+  }
+
   const submit = runInteractive("xcrun", [
     "notarytool", "submit", packagePath, "--keychain-profile", keychainProfile, "--wait",
   ]);
