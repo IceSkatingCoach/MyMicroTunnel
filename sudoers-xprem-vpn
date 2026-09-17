@@ -1,0 +1,17 @@
+# Lets the Xprem VPN menu bar app run wg-quick as root without a password
+# prompt on every toggle. Install with:
+#
+#   sudo install -m 0440 -o root -g wheel \
+#     infra/xprem-vpn-menubar/sudoers-xprem-vpn /etc/sudoers.d/xprem-vpn
+#   sudo visudo -c -f /etc/sudoers.d/xprem-vpn
+#
+# Scope: these two exact command lines only. wg-quick with any other argument,
+# and every other program, still prompts as usual.
+#
+# What this grants: any process running as macbook-neo can bring the wg0
+# tunnel up or down without authenticating. It does NOT grant a general root
+# shell, because the argument lists are fixed. The one thing to keep true is
+# that /etc/wireguard/wg0.conf stays owned by root and mode 0600 — wg-quick
+# executes that file's PreUp/PostUp lines as root, so a user-writable config
+# would turn this entry into a path to full root.
+macbook-neo ALL=(root) NOPASSWD: /opt/homebrew/bin/wg-quick up wg0, /opt/homebrew/bin/wg-quick down wg0
