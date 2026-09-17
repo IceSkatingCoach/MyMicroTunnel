@@ -46,6 +46,10 @@ type Settings struct {
 	GatewayAddress string `json:"gatewayAddress"`
 	WgQuickPath    string `json:"wgQuickPath"`
 
+	// Username owns the sudoers rule. Captured in the unprivileged stage,
+	// because the privileged one may not be able to work it out.
+	Username string `json:"username"`
+
 	// Filled in after the stack is deployed.
 	Endpoint        string `json:"endpoint"`
 	ServerPublicKey string `json:"serverPublicKey"`

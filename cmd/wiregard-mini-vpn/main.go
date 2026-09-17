@@ -113,6 +113,7 @@ func runInstall(args []string) {
 		}
 	}
 
+	settings.Username = setup.CurrentUsername()
 	settings.Region = *region
 	settings.StackName = *stackName
 	settings.DomainName = *domainName
@@ -132,7 +133,15 @@ func runInstall(args []string) {
 		if os.Geteuid() != 0 {
 			ui.Fail("The root stage must run as root.")
 		}
-		if err := setup.WriteRootFiles(settings, setup.CurrentUsername(), true); err != nil {
+		// Prefer the name captured while still unprivileged.
+		owner := settings.Username
+		if owner == "" || owner == "root" {
+			owner = setup.CurrentUsername()
+		}
+		if owner == "root" {
+			ui.Fail("Refusing to write a sudoers rule owned by root: it would grant the actual user nothing.")
+		}
+		if err := setup.WriteRootFiles(settings, owner, true); err != nil {
 			ui.Fail("%v", err)
 		}
 		ui.Done("Tunnel configuration and sudoers rule written")

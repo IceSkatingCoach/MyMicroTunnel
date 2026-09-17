@@ -436,6 +436,31 @@ func (c *Client) WaitForParameter(ctx context.Context, name string, timeout time
 	return "", fmt.Errorf("the gateway never published %s", name)
 }
 
+// StackParameter reads one parameter off the deployed stack, so a caller can
+// tell whether it is about to change it.
+func (c *Client) StackParameter(ctx context.Context, stackName, key string) (string, bool) {
+	out, err := c.CFN.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{StackName: aws.String(stackName)})
+	if err != nil {
+		return "", false
+	}
+	for _, stack := range out.Stacks {
+		for _, parameter := range stack.Parameters {
+			if aws.ToString(parameter.ParameterKey) == key {
+				return aws.ToString(parameter.ParameterValue), true
+			}
+		}
+	}
+	return "", false
+}
+
+func (c *Client) DeleteParameter(ctx context.Context, name string) error {
+	_, err := c.SSM.DeleteParameter(ctx, &ssm.DeleteParameterInput{Name: aws.String(name)})
+	if err != nil && strings.Contains(err.Error(), "ParameterNotFound") {
+		return nil
+	}
+	return err
+}
+
 func (c *Client) TargetGroupARN(ctx context.Context, nameContains string) (string, error) {
 	out, err := c.ELB.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{})
 	if err != nil {

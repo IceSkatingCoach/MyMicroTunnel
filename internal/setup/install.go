@@ -114,6 +114,18 @@ func stagingDir() string {
 func Deploy(ctx context.Context, client *awsops.Client, s *Settings, clientPublicKey string) {
 	ui.Step("Deploying %s (this takes a few minutes)", s.StackName)
 
+	// Changing the client key rewrites the gateway's boot script, which means a
+	// new instance. The replacement republishes its public key, but the old
+	// value is still in Parameter Store, so a naive wait would return the dead
+	// gateway's key straight away and produce a tunnel that never handshakes.
+	// Clearing it first makes the wait mean what it says.
+	if previous, found := client.StackParameter(ctx, s.StackName, "ClientPublicKey"); found && previous != clientPublicKey {
+		ui.Warn("The client key changed; the gateway will be replaced.")
+		if err := client.DeleteParameter(ctx, ServerKeyParam); err != nil {
+			ui.Fail("Could not clear %s before the replacement: %v", ServerKeyParam, err)
+		}
+	}
+
 	parameters := map[string]string{
 		"ClientPublicKey":   clientPublicKey,
 		"ServiceDomainName": s.DomainName,
@@ -217,6 +229,17 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 	}{
 		{TunnelConfig(s), s.TunnelConfigPath(), "0600"},
 		{rule, SudoersPath, "0440"},
+	}
+
+	// An existing private key is never replaced. Overwriting one leaves the
+	// gateway trusting a public key whose private half no longer exists: the
+	// tunnel comes up, sends, and is silently dropped at the far end as an
+	// unknown peer.
+	if asRoot && sys.Exists(ClientKeyPath) {
+		if _, err := os.Stat(staged); err == nil {
+			os.Remove(staged)
+			ui.Warn("Keeping the existing %s; the newly generated key was discarded.", ClientKeyPath)
+		}
 	}
 
 	if content, err := os.ReadFile(staged); err == nil {
@@ -347,13 +370,29 @@ func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 	ui.Done("https://%s/hc returns 200", s.DomainName)
 }
 
+// CurrentUsername is who the sudoers rule should name: the human, never root.
+//
+// Getting this wrong is silent and total. The privileged stage runs as root
+// two different ways — through sudo from a terminal, and through
+// `osascript … with administrator privileges` from the setup window — and only
+// the first sets SUDO_USER. The second once produced a rule reading
+// "root ALL=(root) NOPASSWD: …", which is valid, installs cleanly, and grants
+// the actual user nothing.
 func CurrentUsername() string {
-	// SUDO_USER is set when this process was itself started through sudo, which
-	// is how the privileged stage runs. The rule belongs to the human, not root.
-	if name := os.Getenv("SUDO_USER"); name != "" {
+	if name := os.Getenv("SUDO_USER"); name != "" && name != "root" {
 		return name
 	}
-	if current, err := user.Current(); err == nil {
+
+	// Running as root with no SUDO_USER: ask who owns the login session.
+	if os.Geteuid() == 0 {
+		if console := sys.Run("/usr/bin/stat", "-f%Su", "/dev/console"); console.OK() {
+			if name := strings.TrimSpace(console.Output); name != "" && name != "root" {
+				return name
+			}
+		}
+	}
+
+	if current, err := user.Current(); err == nil && current.Username != "root" {
 		return current.Username
 	}
 	return os.Getenv("USER")
