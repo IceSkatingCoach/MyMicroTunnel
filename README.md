@@ -71,6 +71,44 @@ Removes the app, the login item, the sudoers rule and the local config without
 asking. The private key and the CloudFormation stack are only removed if you say
 yes to each.
 
+## Building the installer package
+
+```sh
+make pkg                              # signs if the certificates are present
+make pkg-notarized PROFILE=wiregard   # signs, notarizes, staples
+```
+
+Produces `build/XpremVpn-<version>.pkg`, which installs the app into
+`/Applications`, drops the installer under `/usr/local/lib/wiregard-mini-vpn`,
+and puts a `wiregard-mini-vpn` command on the path. The package's postinstall
+script opens a Terminal on that command; it deliberately does no configuration
+itself, because deploying needs the user's own AWS credentials and their consent
+for each `sudo` step, and a postinstall script running as root has neither.
+
+Signing needs two certificates, both created under Xcode › Settings › Accounts ›
+Manage Certificates, and both requiring the Account Holder role:
+
+| Certificate | Signs |
+| --- | --- |
+| Developer ID Application | `XpremVpn.app` |
+| Developer ID Installer | the `.pkg` |
+
+An **Apple Distribution** certificate is not a substitute — that one is for the
+App Store and TestFlight, and Gatekeeper rejects it for a direct download.
+Without these, `make pkg` still produces a working package and says what is
+missing; `spctl --assess` will report `rejected: no usable signature`, and
+anyone opening it needs to right-click › Open to get past Gatekeeper.
+
+Notarization credentials are stored once:
+
+```sh
+xcrun notarytool store-credentials wiregard \
+  --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
+```
+
+The package requires Node 22.6 or newer on the target machine, because the
+installer is TypeScript run directly with no build step.
+
 ## Layout
 
 | Path | What it is |

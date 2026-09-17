@@ -415,6 +415,17 @@ function writeAppConfig(settings: Settings): void {
 }
 
 function buildAndInstallApp(): void {
+  // When run from the installed package the app is already in /Applications and
+  // the Swift sources are not shipped, so there is nothing to build.
+  if (!existsSync(menubarDir)) {
+    step("Menu bar app");
+    if (!existsSync(installedApp)) {
+      fail(`${installedApp} is missing and there are no sources to build it from.`);
+    }
+    done(`Already installed at ${installedApp}`);
+    return;
+  }
+
   step("Building the menu bar app");
   if (runInteractive("make", ["-C", menubarDir, "app"]) !== 0) fail("The app did not build.");
 
