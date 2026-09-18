@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Command build-pkg produces the distributable installer package.
 //
 //	go run ./cmd/build-pkg [--notarize <keychain-profile>]
@@ -26,6 +27,13 @@ const (
 	appName    = "XpremVpn.app"
 	bundleID   = "ca.maragato.xprem.vpn"
 	supportDir = "/usr/local/lib/wiregard-mini-vpn"
+
+	// The copy the sudoers rule names. Separate from the one on the path
+	// because /usr/local/bin is a directory Homebrew takes ownership of on
+	// Intel, and a NOPASSWD rule pointing at a user-writable file is a
+	// password-free root shell. See internal/setup.HelperPath.
+	helperDir  = "/Library/PrivilegedHelperTools"
+	helperName = "ca.maragato.xprem.vpn.helper"
 )
 
 var identityPattern = regexp.MustCompile(`"([^"]+)"`)
@@ -37,6 +45,9 @@ func main() {
 	root := repoRoot()
 	buildDir := filepath.Join(root, "build")
 	version := appVersion(root)
+	// The app is built through the Makefile, which stamps this same version
+	// into the binary and into the bundle's Info.plist.
+	os.Setenv("VERSION", version)
 
 	fmt.Printf("Building XpremVpn %s\n", version)
 	must(os.MkdirAll(buildDir, 0o755))
@@ -44,8 +55,15 @@ func main() {
 	buildApp(root)
 
 	appPath := filepath.Join(root, "menubar", "build", appName)
-	enginePath := filepath.Join(appPath, "Contents", "Resources", "wiregard-mini-vpn")
-	signed := signApp(appPath, enginePath)
+	resources := filepath.Join(appPath, "Contents", "Resources")
+	enginePath := filepath.Join(resources, "wiregard-mini-vpn")
+	wireguardPath := filepath.Join(resources, "wireguard-go")
+	verifyUniversal(
+		filepath.Join(appPath, "Contents", "MacOS", "XpremVpn"),
+		enginePath,
+		wireguardPath,
+	)
+	signed := signApp(appPath, append(sparkleParts(appPath), enginePath, wireguardPath)...)
 
 	payloadRoot := stagePayload(root, buildDir, appPath)
 	scriptsDir := stageScripts(buildDir)
@@ -77,7 +95,37 @@ func buildApp(root string) {
 	done("Built")
 }
 
-func signApp(appPath, enginePath string) bool {
+// sparkleParts lists the framework's own nested code, innermost first.
+//
+// Sparkle is not one binary: it carries two XPC services, a helper app and the
+// Autoupdate tool, and codesign seals each container as it signs it. Signing
+// only the framework leaves those inner pieces ad-hoc signed, the outer seal
+// then does not match them, and notarization rejects the package. `codesign
+// --deep` would reach them but is documented as the wrong tool for exactly this
+// case, because it also re-signs things that should have been left alone.
+func sparkleParts(appPath string) []string {
+	framework := filepath.Join(appPath, "Contents", "Frameworks", "Sparkle.framework")
+	if _, err := os.Stat(framework); err != nil {
+		return nil
+	}
+	versions := filepath.Join(framework, "Versions", "B")
+
+	var parts []string
+	for _, relative := range []string{
+		filepath.Join("XPCServices", "Downloader.xpc"),
+		filepath.Join("XPCServices", "Installer.xpc"),
+		"Updater.app",
+		"Autoupdate",
+	} {
+		candidate := filepath.Join(versions, relative)
+		if _, err := os.Stat(candidate); err == nil {
+			parts = append(parts, candidate)
+		}
+	}
+	return append(parts, framework)
+}
+
+func signApp(appPath string, nested ...string) bool {
 	step("Signing")
 
 	identity := findIdentity("Developer ID Application")
@@ -86,10 +134,10 @@ func signApp(appPath, enginePath string) bool {
 		return false
 	}
 
-	// The nested binary is signed first: codesign seals the bundle's contents,
-	// so re-signing an inner file afterwards would invalidate the outer
-	// signature.
-	for _, target := range []string{enginePath, appPath} {
+	// The nested binaries are signed first: codesign seals the bundle's
+	// contents, so re-signing an inner file afterwards would invalidate the
+	// outer signature.
+	for _, target := range append(nested, appPath) {
 		result := run("codesign",
 			"--force", "--options", "runtime", "--timestamp", "--sign", identity, target)
 		if result.code != 0 {
@@ -110,28 +158,50 @@ func stagePayload(root, buildDir, appPath string) string {
 	must(os.MkdirAll(filepath.Join(payloadRoot, supportDir[1:]), 0o755))
 	must(os.MkdirAll(filepath.Join(payloadRoot, "usr/local/bin"), 0o755))
 
+	must(os.MkdirAll(filepath.Join(payloadRoot, helperDir[1:]), 0o755))
+
 	copyTree(appPath, filepath.Join(payloadRoot, "Applications", appName))
 
-	// The CLI on the path and the copy inside the app bundle are the same
-	// binary, so a terminal install and a setup-window install run identical
-	// code.
+	resources := filepath.Join(appPath, "Contents", "Resources")
+
+	// Three copies of one file, on purpose. The CLI on the path is for people;
+	// the helper is the only one the sudoers rule names, and it lives where a
+	// package manager will not hand ownership of it to the user; the one inside
+	// the bundle is what makes the app self-contained. All three are the same
+	// signed build, so a terminal install and a setup-window install run
+	// identical code.
+	engine := filepath.Join(resources, "wiregard-mini-vpn")
+	copyFile(engine, filepath.Join(payloadRoot, "usr/local/bin/wiregard-mini-vpn"), 0o755)
+	copyFile(engine, filepath.Join(payloadRoot, helperDir[1:], helperName), 0o755)
+
+	// wireguard-go outside the bundle too, so the helper and the supervisor
+	// keep working if the app is dragged to the Trash.
 	copyFile(
-		filepath.Join(appPath, "Contents", "Resources", "wiregard-mini-vpn"),
-		filepath.Join(payloadRoot, "usr/local/bin/wiregard-mini-vpn"),
+		filepath.Join(resources, "wireguard-go"),
+		filepath.Join(payloadRoot, supportDir[1:], "wireguard-go"),
 		0o755,
 	)
 
-	// The template is embedded in the binary, so nothing else has to ship. The
-	// directory is still created: the uninstaller and any future support files
-	// expect it to exist.
 	must(os.WriteFile(
 		filepath.Join(payloadRoot, supportDir[1:], "README"),
-		[]byte("Installed by wiregard_mini_vpn. The CloudFormation template is embedded in\n"+
-			"/usr/local/bin/wiregard-mini-vpn; run `wiregard-mini-vpn install` to deploy.\n"),
+		[]byte("Installed by wiregard_mini_vpn.\n\n"+
+			"The CloudFormation template is embedded in the binary; run\n"+
+			"`wiregard-mini-vpn install --domain <hostname>` to deploy.\n\n"+
+			"wireguard-go beside this file is MIT-licensed and unmodified except for\n"+
+			"a dependency upgrade needed to build it with a current Go; see\n"+
+			"cmd/fetch-wireguard in the source for the exact versions.\n"),
 		0o644,
 	))
 
-	done("/Applications/%s, /usr/local/bin/wiregard-mini-vpn", appName)
+	// Extended attributes picked up from the build machine — quarantine flags,
+	// provenance — are flattened by pkgbuild into ._ files that then sit next to
+	// every binary in /Applications. The signature lives in the Mach-O, not in
+	// an xattr, so there is nothing here worth carrying.
+	if result := run("xattr", "-cr", payloadRoot); result.code != 0 {
+		warn("Could not clear extended attributes: %s", result.output)
+	}
+
+	done("/Applications/%s, %s, %s/%s", appName, "/usr/local/bin/wiregard-mini-vpn", helperDir, helperName)
 	return payloadRoot
 }
 
@@ -166,6 +236,11 @@ func buildComponent(buildDir, payloadRoot, scriptsDir, version string) {
 		"--version", version,
 		"--scripts", scriptsDir,
 		"--install-location", "/",
+		// Everything outside /Applications has to land as root:wheel. The
+		// helper's whole reason for existing is that the user cannot write it,
+		// and payload files built by a developer account are owned by that
+		// account until this says otherwise.
+		"--ownership", "recommended",
 		filepath.Join(buildDir, "component.pkg"),
 	)
 	if result.code != 0 {
@@ -181,7 +256,7 @@ func buildProduct(buildDir, version string, appSigned bool) string {
 		`<?xml version="1.0" encoding="utf-8"?>`,
 		`<installer-gui-script minSpecVersion="2">`,
 		`  <title>Xprem Mini VPN</title>`,
-		`  <options customize="never" require-scripts="false" hostArchitectures="arm64"/>`,
+		`  <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>`,
 		`  <volume-check>`,
 		`    <allowed-os-versions><os-version min="13.0"/></allowed-os-versions>`,
 		`  </volume-check>`,
@@ -339,16 +414,37 @@ func repoRoot() string {
 	return ""
 }
 
+// appVersion reads the one file that says what this release is called. The
+// bundle's Info.plist is generated from it, so reading the plist here would be
+// reading back what the build just wrote.
 func appVersion(root string) string {
-	content, err := os.ReadFile(filepath.Join(root, "menubar", "Info.plist"))
+	content, err := os.ReadFile(filepath.Join(root, "VERSION"))
 	if err != nil {
-		return "1.0"
+		fail("No VERSION file at the repository root: %v", err)
 	}
-	pattern := regexp.MustCompile(`<key>CFBundleShortVersionString</key>\s*<string>([^<]+)</string>`)
-	if match := pattern.FindStringSubmatch(string(content)); len(match) == 2 {
-		return match[1]
+	version := strings.TrimSpace(string(content))
+	if version == "" {
+		fail("The VERSION file is empty.")
 	}
-	return "1.0"
+	return version
+}
+
+// verifyUniversal refuses to ship a package that only runs on the machine that
+// built it. A single-slice binary installs cleanly on the other architecture
+// and then fails to launch, which looks to the customer like a broken product
+// rather than a wrong download.
+func verifyUniversal(paths ...string) {
+	step("Checking the architectures")
+	for _, path := range paths {
+		info := run("lipo", "-archs", path).output
+		for _, wanted := range []string{"arm64", "x86_64"} {
+			if !strings.Contains(info, wanted) {
+				fail("%s has no %s slice (lipo reports %q). Run `make clean && make app`.",
+					filepath.Base(path), wanted, info)
+			}
+		}
+		done("%s: %s", filepath.Base(path), info)
+	}
 }
 
 func copyTree(source, destination string) {

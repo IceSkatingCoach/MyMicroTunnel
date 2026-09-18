@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Package sys wraps the parts of the install that are not AWS: running local
 // commands, and writing the two files that must be owned by root.
 package sys

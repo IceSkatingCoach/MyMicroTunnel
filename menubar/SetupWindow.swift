@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // First-run setup, as a window rather than a terminal session.
 //
 // It does not reimplement the deployment: it drives the wiregard-mini-vpn
@@ -23,8 +24,11 @@ final class SetupWindowController: NSWindowController {
     private let regionField = NSTextField()
     private let stackField = NSTextField()
     private let domainField = NSTextField()
-    private let dnsStackField = NSTextField()
     private let portField = NSTextField()
+    private let healthPathField = NSTextField()
+    private let alarmEmailField = NSTextField()
+    private let superviseCheckbox = NSButton(
+        checkboxWithTitle: "Restore the tunnel after a reboot", target: nil, action: nil)
 
     private let logView = NSTextView()
     private let progress = NSProgressIndicator()
@@ -42,6 +46,9 @@ final class SetupWindowController: NSWindowController {
             defer: false
         )
         window.title = "Xprem VPN Setup"
+        // The engine's version, not the app's: the engine is what talks to AWS,
+        // and in a source build the two can differ.
+        window.subtitle = runBinary(["version"])
         window.center()
         self.init(window: window)
         buildLayout()
@@ -65,10 +72,12 @@ final class SetupWindowController: NSWindowController {
 
         let defaults = SetupDefaults()
         regionField.stringValue = defaults.region
+        regionField.placeholderString = "taken from the profile when left empty"
         stackField.stringValue = defaults.stackName
-        domainField.stringValue = defaults.domainName
-        dnsStackField.stringValue = defaults.dnsStackName
+        domainField.placeholderString = "updates.example.com"
         portField.stringValue = defaults.servicePort
+        healthPathField.stringValue = defaults.healthCheckPath
+        alarmEmailField.placeholderString = "optional"
 
         form.addArrangedSubview(sectionLabel("AWS credentials"))
         form.addArrangedSubview(credentialMode)
@@ -81,13 +90,17 @@ final class SetupWindowController: NSWindowController {
         form.addArrangedSubview(sectionLabel("Deployment"))
         form.addArrangedSubview(labelled("Stack name", stackField))
         form.addArrangedSubview(labelled("Public hostname", domainField))
-        form.addArrangedSubview(labelled("Route53 stack", dnsStackField))
         form.addArrangedSubview(labelled("Local service port", portField))
+        form.addArrangedSubview(labelled("Health check path", healthPathField))
+        form.addArrangedSubview(labelled("Notify on failure", alarmEmailField))
+        form.addArrangedSubview(labelled("", superviseCheckbox))
 
         let costNote = NSTextField(wrappingLabelWithString:
-            "Deploys AWS resources that cost roughly USD 26/month. You will be asked "
-            + "to authorise one privileged step, which writes the tunnel configuration "
-            + "and the sudoers rule.")
+            "Deploys AWS resources into your own account that cost roughly USD 26/month. "
+            + "The VPC, subnets and Route53 zone are found automatically. You will be "
+            + "asked to authorise one privileged step, which writes the tunnel "
+            + "configuration, the sudoers rule and — if the box above is ticked — the "
+            + "supervisor.")
         costNote.font = .systemFont(ofSize: 11)
         costNote.textColor = .secondaryLabelColor
 
@@ -191,6 +204,21 @@ final class SetupWindowController: NSWindowController {
 
     @objc private func startInstall() {
         guard !isRunning else { return }
+
+        // Caught here rather than by CloudFormation five minutes in. The engine
+        // validates the same thing; this only saves the round trip.
+        let domain = domainField.stringValue.trimmingCharacters(in: .whitespaces)
+        guard domain.contains("."), !domain.hasPrefix("."), !domain.hasSuffix(".") else {
+            let alert = NSAlert()
+            alert.messageText = "A public hostname is needed"
+            alert.informativeText =
+                "Enter the fully qualified name this deployment should serve, such as "
+                + "updates.example.com. A Route53 hosted zone in this account has to be "
+                + "authoritative for it."
+            alert.runModal()
+            return
+        }
+
         isRunning = true
         installButton.isEnabled = false
         progress.startAnimation(nil)
@@ -200,12 +228,23 @@ final class SetupWindowController: NSWindowController {
         var arguments = [
             "install", "--json", "--non-interactive",
             "--settings", settingsPath,
-            "--region", regionField.stringValue,
             "--stack", stackField.stringValue,
-            "--domain", domainField.stringValue,
-            "--dns-stack", dnsStackField.stringValue,
+            "--domain", domain,
             "--port", portField.stringValue,
+            "--health-path", healthPathField.stringValue,
         ]
+
+        // Left out entirely when empty, so the engine can fall back to the
+        // region the profile already names rather than to a guess.
+        if !regionField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
+            arguments += ["--region", regionField.stringValue]
+        }
+        if !alarmEmailField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
+            arguments += ["--alarm-email", alarmEmailField.stringValue]
+        }
+        if superviseCheckbox.state == .on {
+            arguments += ["--supervise"]
+        }
 
         if credentialMode.indexOfSelectedItem == 0 {
             arguments += ["--profile", profileField.titleOfSelectedItem ?? "default"]
@@ -255,6 +294,9 @@ final class SetupWindowController: NSWindowController {
             "install", "--json", "--non-interactive", "--stage", "finish",
             "--settings", settingsPath, "--login-item",
         ]
+        if superviseCheckbox.state == .on {
+            arguments += ["--supervise"]
+        }
         if credentialMode.indexOfSelectedItem == 0 {
             arguments += ["--profile", profileField.titleOfSelectedItem ?? "default"]
         }
@@ -368,12 +410,14 @@ enum SetupEngine {
 
 // MARK: - Helpers
 
+/// Only the answers that are the same for everyone. A region or a hostname
+/// default would be one particular deployment's, and accepting it would claim
+/// a name in somebody else's zone.
 struct SetupDefaults {
-    let region = "us-east-2"
+    let region = ""
     let stackName = "xprem-onprem-vpn"
-    let domainName = "update.mobile.maragato.ca"
-    let dnsStackName = "xprem-dns"
     let servicePort = "3000"
+    let healthCheckPath = "/hc"
 }
 
 func runCommand(_ path: String, _ arguments: [String]) -> (status: Int32, output: String) {

@@ -1,7 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 AWSTemplateFormatVersion: '2010-09-09'
 
-# Network Load Balancer in AWS fronting an xprem deployment that runs on a
-# workstation outside AWS, reached over a WireGuard tunnel.
+# Network Load Balancer in AWS fronting a service that runs on a workstation
+# outside AWS, reached over a WireGuard tunnel.
 #
 # WHY NOT AWS Site-to-Site VPN
 # ----------------------------
@@ -14,149 +15,122 @@ AWSTemplateFormatVersion: '2010-09-09'
 #
 # WireGuard inverts the direction: the workstation dials out to a fixed Elastic
 # IP, so no inbound port forward is needed on the home router and a new ISP
-# lease just re-pins the tunnel on the next keepalive. The tunnel terminates on
-# a t4g.nano instance in the default VPC that forwards between the VPC and the
-# workstation.
+# lease just re-pins the tunnel on the next keepalive.
 #
 # TRAFFIC PATH
 # ------------
 #   client -> NLB :443 (TLS terminated here)
 #          -> target 10.100.0.2:3000, an address outside the VPC CIDR
 #          -> VPC route 10.100.0.0/24 -> gateway instance ENI
-#          -> wg0 -> workstation -> Docker publishes xprem on :3000
+#          -> wg0 -> workstation -> the service listens on :3000
 #
 # The gateway does no NAT. Replies leave the workstation with source
 # 10.100.0.2 and are routed back through the same instance, which is why the
 # instance has SourceDestCheck disabled.
 #
-# DEPLOY ORDER
-# ------------
-#   1. On the workstation, create the client keypair and hand the public half
-#      to this stack:
+# WHAT THIS TEMPLATE DOES NOT OWN
+# -------------------------------
+# Two things that used to be CloudFormation properties are now reconciled at
+# run time, because both of them change far more often than the stack does:
 #
-#        brew install wireguard-tools
-#        sudo mkdir -p /etc/wireguard && sudo chmod 700 /etc/wireguard
-#        wg genkey | sudo tee /etc/wireguard/client.key >/dev/null
-#        sudo chmod 600 /etc/wireguard/client.key
-#        sudo wg pubkey < /etc/wireguard/client.key
+#   · the peer list, in SSM at PeersParameter. Adding a workstation used to
+#     mean a new ClientPublicKey, a rewritten boot script, and therefore a
+#     replaced instance. A timer on the gateway now reads that parameter and
+#     applies it with `wg set`, so a peer change costs one API call.
 #
-#   2. Deploy this stack, passing that public key as ClientPublicKey. The ACM
-#      certificate is DNS-validated against the zone owned by the DNS stack, so
-#      that stack must already be authoritative for maragato.ca.
+#   · the target group's targets, registered by the installer. CloudFormation
+#     would otherwise have to know every workstation address at deploy time.
 #
-#        aws cloudformation deploy \
-#          --stack-name xprem-onprem-vpn \
-#          --template-file infra/cloudformation-xprem-onprem-vpn.yaml \
-#          --capabilities CAPABILITY_IAM \
-#          --parameter-overrides ClientPublicKey=<key from step 1>
+# Both are deliberate gaps in the stack's coverage: `cloudformation delete`
+# leaves neither behind, because the parameter is owned by the stack and the
+# targets die with the target group.
 #
-#   3. The gateway generates its own server keypair at boot and publishes the
-#      public half to SSM Parameter Store, so it never travels through a
-#      CloudFormation parameter. Write the workstation config from the two
-#      stack outputs:
+# WHY THE GATEWAY IS AN AUTO SCALING GROUP OF ONE
+# -----------------------------------------------
+# A bare instance that fails stays failed until a human notices. A group of one
+# is replaced automatically. Two things follow from that, and both are handled
+# in UserData rather than here, because neither the replacement instance nor
+# its ENI has an id CloudFormation can refer to:
 #
-#        aws ssm get-parameter --name /xprem/vpn/server-public-key \
-#          --query Parameter.Value --output text
+#   · the Elastic IP is associated by the instance itself, so the endpoint in
+#     every workstation's wg0.conf keeps pointing at a live gateway;
+#   · the VPN route is (re)written by the instance itself, at every boot.
 #
-#        [Interface]
-#        PrivateKey = <contents of /etc/wireguard/client.key>
-#        Address    = 10.100.0.2/32
-#        MTU        = 1380
-#
-#        [Peer]
-#        PublicKey  = <server public key from SSM>
-#        AllowedIPs = 10.100.0.0/24, 172.31.0.0/16
-#        Endpoint   = <GatewayPublicIp output>:51820
-#        PersistentKeepalive = 25
-#
-#      Save as /etc/wireguard/wg0.conf, then `sudo wg-quick up wg0`.
-#      PersistentKeepalive is what keeps the home NAT mapping alive and what
-#      re-registers the tunnel after the ISP changes the public address.
-#
-# COST
-# ----
-# NLB ~USD 16/month plus LCUs, t4g.nano ~USD 3/month, Elastic IP ~USD 3.60/month.
+# The server keypair is persisted in SSM as a SecureString and read back by the
+# replacement, so a replaced gateway keeps its WireGuard identity. Without that,
+# every replacement would silently invalidate the PublicKey line in each
+# workstation's config.
 
 Parameters:
-  DnsStackName:
-    Type: String
-    Default: xprem-dns
-    Description: Name of the deployed cloudformation-xprem-dns.yaml stack
-
   ServiceDomainName:
     Type: String
-    Default: update.mobile.maragato.ca
     Description: >-
-      Public hostname served by this NLB. This is the same name that
-      cloudformation-xprem-service.yaml claims for its Fargate ALB, and the two
-      stacks cannot both hold it: the second one to deploy fails on a
-      duplicate Route53 record. That stack is not currently deployed, so this
-      one owns the name. Change this parameter before deploying the Fargate
-      stack alongside it.
+      Public hostname served by this NLB, for example
+      updates.example.com. A certificate is issued for it and a Route53 alias
+      record is created in HostedZoneId.
+    AllowedPattern: '^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$'
+    ConstraintDescription: must be a fully qualified domain name
+
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: >-
+      Public hosted zone that is authoritative for ServiceDomainName. The
+      installer finds it by walking up from the hostname; it is a parameter
+      rather than an Fn::ImportValue so this stack does not require a
+      particular DNS stack to exist alongside it.
 
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Default: vpc-047b226a8150b290a
-    Description: Default VPC, CIDR 172.31.0.0/16
-
-  SubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Default: subnet-0953ed3798a9a0a5e,subnet-0d3c79525d4a9a346,subnet-0d81ad853a719e494
-    Description: Public subnets of the default VPC, one per AZ, for the NLB nodes
-
-  GatewaySubnetId:
-    Type: AWS::EC2::Subnet::Id
-    Default: subnet-0953ed3798a9a0a5e
-    Description: >-
-      Single public subnet holding the WireGuard gateway. The tunnel is a
-      single instance, so this is also the single point of failure for the
-      whole path.
-
-  RouteTableId:
-    Type: String
-    Default: rtb-0d7c42156a22d5ce2
-    Description: >-
-      Route table of the NLB subnets, which gets the 10.100.0.0/24 route to the
-      gateway. The default VPC uses one main route table for every subnet; a
-      VPC with per-subnet tables needs this route added to each of them.
+    Description: VPC the load balancer and the gateway live in
 
   VpcCidr:
     Type: String
-    Default: 172.31.0.0/16
-    Description: Source range allowed to reach the tunnel, i.e. the NLB nodes
-
-  ClientPublicKey:
-    Type: String
     Description: >-
-      WireGuard public key of the workstation, from `wg pubkey`. The private
-      half never leaves the workstation.
+      Source range allowed to reach the tunnelled port, i.e. the NLB nodes.
+      This is the CIDR of VpcId.
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Public subnets, one per availability zone, for the NLB nodes
+
+  GatewaySubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: >-
+      Public subnets the gateway may be placed in. More than one lets the Auto
+      Scaling group rebuild the gateway when an entire availability zone is
+      unavailable; the tunnel is still a single instance at any moment.
+
+  RouteTableIds:
+    Type: CommaDelimitedList
+    Description: >-
+      Every route table whose subnets must reach the tunnel. The gateway writes
+      the VpnCidr route into each of them at boot. A default VPC has one main
+      route table; a VPC with per-subnet tables needs each of them listed.
 
   VpnCidr:
     Type: String
     Default: 10.100.0.0/24
-    Description: Tunnel subnet. Must not overlap the VPC or the home LAN.
+    Description: Tunnel subnet. Must not overlap the VPC or any workstation LAN.
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'
 
   GatewayVpnAddress:
     Type: String
     Default: 10.100.0.1
     Description: Tunnel address of the gateway instance
-
-  ClientVpnAddress:
-    Type: String
-    Default: 10.100.0.2
-    Description: >-
-      Tunnel address of the workstation. This is the NLB target, which is legal
-      because IP target groups accept RFC1918 addresses outside the VPC CIDR.
+    AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
 
   ServicePort:
     Type: Number
     Default: 3000
-    Description: Port the xprem container publishes on the workstation
+    MinValue: 1
+    MaxValue: 65535
+    Description: Port the service listens on, on every workstation
 
-  ServerPublicKeyParameter:
+  HealthCheckPath:
     Type: String
-    Default: /xprem/vpn/server-public-key
-    Description: SSM parameter the gateway writes its generated public key to
+    Default: /hc
+    Description: Path the load balancer polls to decide a workstation is serving
 
   GatewayInstanceType:
     Type: String
@@ -174,15 +148,38 @@ Parameters:
       Latest AL2023 arm64 AMI. Kernel 6.1 carries WireGuard in-tree, so only
       the userspace tooling is installed at boot.
 
+  AlarmEmail:
+    Type: String
+    Default: ''
+    Description: >-
+      Address to notify when the gateway is unhealthy. Empty means no topic and
+      no alarms are created: a stack with nobody to tell should not pay for the
+      machinery of telling them.
+
+  AlarmOnTunnelDown:
+    Type: String
+    Default: 'false'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Also alarm when no workstation is serving. Off by default because the
+      tunnel is a switch someone turns off on purpose, and an alarm that fires
+      every evening is an alarm nobody reads.
+
+Conditions:
+  HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  AlarmsTunnel: !And
+    - !Condition HasAlarmEmail
+    - !Equals [!Ref AlarmOnTunnelDown, 'true']
+
 Resources:
   # --- Tunnel gateway ------------------------------------------------------
   GatewaySecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: WireGuard gateway for the on-premises xprem deployment
+      GroupDescription: !Sub 'WireGuard gateway for ${AWS::StackName}'
       VpcId: !Ref VpcId
       SecurityGroupIngress:
-        # Open to the internet on purpose: the workstation's source address
+        # Open to the internet on purpose: a workstation's source address
         # changes, so it cannot be pinned here. Authentication is the
         # WireGuard key exchange, and an unauthenticated packet is dropped
         # without a reply.
@@ -190,14 +187,14 @@ Resources:
           FromPort: 51820
           ToPort: 51820
           CidrIp: 0.0.0.0/0
-          Description: WireGuard from the workstation
+          Description: WireGuard from the workstations
         # Forwarded traffic crosses this ENI, so the security group has to
         # admit the NLB's health checks and requests as well.
         - IpProtocol: tcp
           FromPort: !Ref ServicePort
           ToPort: !Ref ServicePort
           CidrIp: !Ref VpcCidr
-          Description: NLB nodes towards the tunnelled xprem
+          Description: NLB nodes towards the tunnelled service
 
   GatewayRole:
     Type: AWS::IAM::Role
@@ -213,13 +210,36 @@ Resources:
         # Session Manager, so the instance needs no SSH key and no port 22.
         - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
-        - PolicyName: publish-wireguard-public-key
+        - PolicyName: gateway-self-configuration
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
+              # The keypair and the peer list. Scoped to this stack's own
+              # parameter prefix, so one account can hold several deployments
+              # without either of them being able to read the other's key.
               - Effect: Allow
-                Action: ssm:PutParameter
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter${ServerPublicKeyParameter}'
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+                Resource: !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AWS::StackName}/wireguard/*'
+              # Claiming the Elastic IP and repointing the route are what make
+              # a replacement instance a working gateway rather than a new one
+              # nobody can reach. Neither API accepts a resource ARN.
+              - Effect: Allow
+                Action:
+                  - ec2:AssociateAddress
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeRouteTables
+                  - ec2:CreateRoute
+                  - ec2:ReplaceRoute
+                  - ec2:ModifyInstanceAttribute
+                Resource: '*'
+              - Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: XpremVpn
 
   GatewayInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -227,95 +247,265 @@ Resources:
       Roles:
         - !Ref GatewayRole
 
-  GatewayInstance:
-    Type: AWS::EC2::Instance
+  GatewayEip:
+    Type: AWS::EC2::EIP
+    # Not associated here. The instance claims it at boot, because a replacement
+    # instance has no id this template can name.
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-wireguard-endpoint'
+
+  GatewayLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        ImageId: !Ref GatewayImageId
+        InstanceType: !Ref GatewayInstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt GatewayInstanceProfile.Arn
+        SecurityGroupIds:
+          - !Ref GatewaySecurityGroup
+        MetadataOptions:
+          # IMDSv2 only, and a hop limit of 1 so a container on the instance
+          # cannot reach the credentials the role hands out.
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub '${AWS::StackName}-wireguard-gateway'
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+
+              # dnf's metadata parse is the memory high-water mark of this boot.
+              if [ ! -f /swapfile ]; then
+                dd if=/dev/zero of=/swapfile bs=1M count=1024
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                echo '/swapfile none swap sw 0 0' >> /etc/fstab
+              fi
+
+              dnf -y install wireguard-tools aws-cfn-bootstrap
+              trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource GatewayGroup --region ${AWS::Region} || true' ERR
+
+              # Sourced by the reconcile script, so the two never disagree about
+              # which parameters and which route tables belong to this stack.
+              cat > /etc/xprem-gateway.env <<ENV
+              REGION=${AWS::Region}
+              STACK=${AWS::StackName}
+              PEERS_PARAM=/${AWS::StackName}/wireguard/peers
+              SERVER_PUBLIC_PARAM=/${AWS::StackName}/wireguard/server-public-key
+              SERVER_PRIVATE_PARAM=/${AWS::StackName}/wireguard/server-private-key
+              ALLOCATION_ID=${AllocationId}
+              ROUTE_TABLES="${RouteTables}"
+              VPN_CIDR=${VpnCidr}
+              GATEWAY_ADDRESS=${GatewayVpnAddress}
+              ENV
+              chmod 600 /etc/xprem-gateway.env
+              . /etc/xprem-gateway.env
+
+              TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token \
+                -H 'X-aws-ec2-metadata-token-ttl-seconds: 600')
+              INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
+                http://169.254.169.254/latest/meta-data/instance-id)
+              echo "INSTANCE_ID=$INSTANCE_ID" >> /etc/xprem-gateway.env
+
+              # The endpoint every workstation dials. Claimed before anything
+              # else, so a replacement is reachable as early as possible.
+              aws ec2 associate-address --region "$REGION" \
+                --instance-id "$INSTANCE_ID" \
+                --allocation-id "$ALLOCATION_ID" \
+                --allow-reassociation
+
+              # Required: this instance both sends and receives packets
+              # addressed to the tunnel subnet, which is not one of its own
+              # addresses. A launch template has no field for it, so it is set
+              # here rather than as a property of the instance.
+              aws ec2 modify-instance-attribute --region "$REGION" \
+                --instance-id "$INSTANCE_ID" --no-source-dest-check
+
+              echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-wireguard.conf
+              sysctl --system
+
+              mkdir -p /etc/wireguard
+              chmod 700 /etc/wireguard
+              umask 077
+
+              # Read back rather than regenerated, so a replacement keeps the
+              # identity every workstation's [Peer] PublicKey line names. A new
+              # keypair here would look like a working deploy and leave every
+              # tunnel unable to handshake.
+              if aws ssm get-parameter --region "$REGION" --with-decryption \
+                   --name "$SERVER_PRIVATE_PARAM" --query Parameter.Value \
+                   --output text > /etc/wireguard/server.key 2>/dev/null \
+                 && [ -s /etc/wireguard/server.key ]; then
+                echo 'reusing the stored server key'
+              else
+                wg genkey > /etc/wireguard/server.key
+                aws ssm put-parameter --region "$REGION" \
+                  --name "$SERVER_PRIVATE_PARAM" --type SecureString --overwrite \
+                  --value "$(cat /etc/wireguard/server.key)"
+              fi
+              wg pubkey < /etc/wireguard/server.key > /etc/wireguard/server.pub
+
+              cat > /etc/wireguard/wg0.conf <<CONF
+              [Interface]
+              Address = $GATEWAY_ADDRESS/24
+              ListenPort = 51820
+              PrivateKey = $(cat /etc/wireguard/server.key)
+              CONF
+              # Peers are deliberately absent: they arrive from SSM below, and
+              # keeping them out of this file means a peer change never needs a
+              # new boot script and therefore never replaces this instance.
+
+              install -m 0755 /dev/stdin /usr/local/sbin/xprem-gateway-sync <<'SYNC'
+              #!/bin/bash
+              # Reconciles the three things that are not CloudFormation's to own:
+              # the VPN route, the WireGuard peer list, and the metric that says
+              # whether anybody is actually connected.
+              set -euo pipefail
+              . /etc/xprem-gateway.env
+
+              for table in $ROUTE_TABLES; do
+                aws ec2 replace-route --region "$REGION" \
+                  --route-table-id "$table" \
+                  --destination-cidr-block "$VPN_CIDR" \
+                  --instance-id "$INSTANCE_ID" 2>/dev/null \
+                || aws ec2 create-route --region "$REGION" \
+                  --route-table-id "$table" \
+                  --destination-cidr-block "$VPN_CIDR" \
+                  --instance-id "$INSTANCE_ID" >/dev/null
+              done
+
+              peers=$(aws ssm get-parameter --region "$REGION" --name "$PEERS_PARAM" \
+                --query Parameter.Value --output text 2>/dev/null || echo '[]')
+
+              # python3 rather than jq: it is already on an AL2023 image, and a
+              # malformed parameter should leave the running peers alone rather
+              # than take the tunnel down.
+              desired=$(printf '%s' "$peers" | python3 -c '
+              import json, sys
+              try:
+                  entries = json.load(sys.stdin)
+              except Exception:
+                  sys.exit(3)
+              for entry in entries:
+                  key = str(entry.get("publicKey", "")).strip()
+                  address = str(entry.get("address", "")).strip()
+                  if key and address:
+                      print(key, address)
+              ') || { echo "peer parameter is not valid JSON; leaving peers unchanged" >&2; desired=""; unchanged=1; }
+
+              if [ -z "${!unchanged:-}" ]; then
+                for key in $(wg show wg0 peers 2>/dev/null || true); do
+                  printf '%s\n' "$desired" | grep -q "^$key " || wg set wg0 peer "$key" remove
+                done
+                while read -r key address; do
+                  [ -n "$key" ] || continue
+                  wg set wg0 peer "$key" allowed-ips "$address/32"
+                done <<< "$desired"
+                # Persisted so a reboot comes back with the peers it had, without
+                # waiting for the next timer tick.
+                wg-quick save wg0 2>/dev/null || true
+              fi
+
+              # A handshake inside three minutes is the definition of connected:
+              # PersistentKeepalive is 25s, so anything older means gone.
+              now=$(date +%s)
+              connected=0
+              while read -r _ stamp; do
+                [ -n "$stamp" ] || continue
+                [ "$stamp" -gt 0 ] || continue
+                [ $((now - stamp)) -lt 180 ] && connected=$((connected + 1))
+              done < <(wg show wg0 latest-handshakes 2>/dev/null || true)
+
+              aws cloudwatch put-metric-data --region "$REGION" \
+                --namespace XpremVpn \
+                --metric-name ConnectedPeers \
+                --dimensions StackName="$STACK" \
+                --value "$connected" >/dev/null 2>&1 || true
+              SYNC
+
+              cat > /etc/systemd/system/xprem-gateway-sync.service <<UNIT
+              [Unit]
+              Description=Reconcile the WireGuard peers, the VPN route and the connected-peer metric
+              After=wg-quick@wg0.service
+              Wants=wg-quick@wg0.service
+
+              [Service]
+              Type=oneshot
+              ExecStart=/usr/local/sbin/xprem-gateway-sync
+              UNIT
+
+              cat > /etc/systemd/system/xprem-gateway-sync.timer <<UNIT
+              [Unit]
+              Description=Run the gateway reconcile every minute
+
+              [Timer]
+              OnBootSec=30s
+              OnUnitActiveSec=60s
+              AccuracySec=5s
+
+              [Install]
+              WantedBy=timers.target
+              UNIT
+
+              systemctl enable --now wg-quick@wg0
+              systemctl daemon-reload
+              systemctl enable --now xprem-gateway-sync.timer
+              # Once synchronously, so the route and the peers exist before the
+              # signal below tells CloudFormation the gateway is ready.
+              /usr/local/sbin/xprem-gateway-sync
+
+              # Published last: its arrival is the installer's signal that the
+              # boot script got all the way through.
+              aws ssm put-parameter --region "$REGION" \
+                --name "$SERVER_PUBLIC_PARAM" --type String --overwrite \
+                --value "$(cat /etc/wireguard/server.pub)"
+
+              /opt/aws/bin/cfn-signal -e 0 \
+                --stack ${AWS::StackName} \
+                --resource GatewayGroup \
+                --region ${AWS::Region}
+            - AllocationId: !GetAtt GatewayEip.AllocationId
+              RouteTables: !Join [' ', !Ref RouteTableIds]
+
+  GatewayGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
     # Without this, a UserData that dies halfway still reports CREATE_COMPLETE
     # and the breakage only surfaces later as a tunnel that never comes up.
     CreationPolicy:
       ResourceSignal:
         Timeout: PT10M
         Count: 1
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 0
+        MaxBatchSize: 1
+        WaitOnResourceSignals: true
+        PauseTime: PT10M
     Properties:
-      ImageId: !Ref GatewayImageId
-      InstanceType: !Ref GatewayInstanceType
-      SubnetId: !Ref GatewaySubnetId
-      IamInstanceProfile: !Ref GatewayInstanceProfile
-      SecurityGroupIds:
-        - !Ref GatewaySecurityGroup
-      # Required: the instance both sends and receives packets addressed to
-      # 10.100.0.2, which is not one of its own addresses.
-      SourceDestCheck: false
-      Tags:
-        - Key: Name
-          Value: !Sub '${AWS::StackName}-wireguard-gateway'
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -euxo pipefail
-
-          # dnf's metadata parse is the memory high-water mark of this boot.
-          dd if=/dev/zero of=/swapfile bs=1M count=1024
-          chmod 600 /swapfile
-          mkswap /swapfile
-          swapon /swapfile
-          echo '/swapfile none swap sw 0 0' >> /etc/fstab
-
-          dnf -y install wireguard-tools aws-cfn-bootstrap
-          trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource GatewayInstance --region ${AWS::Region} || true' ERR
-
-          echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-wireguard.conf
-          sysctl --system
-
-          mkdir -p /etc/wireguard
-          chmod 700 /etc/wireguard
-          umask 077
-          wg genkey > /etc/wireguard/server.key
-          wg pubkey < /etc/wireguard/server.key > /etc/wireguard/server.pub
-
-          cat > /etc/wireguard/wg0.conf <<EOF
-          [Interface]
-          Address = ${GatewayVpnAddress}/24
-          ListenPort = 51820
-          PrivateKey = $(cat /etc/wireguard/server.key)
-
-          [Peer]
-          PublicKey = ${ClientPublicKey}
-          AllowedIPs = ${ClientVpnAddress}/32
-          EOF
-
-          systemctl enable --now wg-quick@wg0
-
-          # The public key is published rather than passed in, so no private
-          # key is ever stored in a CloudFormation parameter. Its arrival is
-          # also the signal that the boot script got all the way through.
-          aws ssm put-parameter \
-            --region ${AWS::Region} \
-            --name ${ServerPublicKeyParameter} \
-            --type String \
-            --overwrite \
-            --value "$(cat /etc/wireguard/server.pub)"
-
-          /opt/aws/bin/cfn-signal -e 0 \
-            --stack ${AWS::StackName} \
-            --resource GatewayInstance \
-            --region ${AWS::Region}
-
-  GatewayEip:
-    Type: AWS::EC2::EIP
-    Properties:
-      Domain: vpc
-      InstanceId: !Ref GatewayInstance
-      Tags:
-        - Key: Name
-          Value: !Sub '${AWS::StackName}-wireguard-endpoint'
-
-  # Sends the NLB's traffic for the tunnel subnet at the gateway's ENI.
-  VpnRoute:
-    Type: AWS::EC2::Route
-    Properties:
-      RouteTableId: !Ref RouteTableId
-      DestinationCidrBlock: !Ref VpnCidr
-      InstanceId: !Ref GatewayInstance
+      MinSize: '1'
+      MaxSize: '1'
+      DesiredCapacity: '1'
+      VPCZoneIdentifier: !Ref GatewaySubnetIds
+      LaunchTemplate:
+        LaunchTemplateId: !Ref GatewayLaunchTemplate
+        Version: !GetAtt GatewayLaunchTemplate.LatestVersionNumber
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      # Collected so the group-size alarm below has something to read.
+      MetricsCollection:
+        - Granularity: 1Minute
+          Metrics:
+            - GroupInServiceInstances
 
   # --- TLS -----------------------------------------------------------------
   Certificate:
@@ -325,8 +515,7 @@ Resources:
       ValidationMethod: DNS
       DomainValidationOptions:
         - DomainName: !Ref ServiceDomainName
-          HostedZoneId:
-            Fn::ImportValue: !Sub '${DnsStackName}-HostedZoneId'
+          HostedZoneId: !Ref HostedZoneId
 
   # --- Load balancer -------------------------------------------------------
   LoadBalancer:
@@ -349,14 +538,11 @@ Resources:
       TargetType: ip
       Protocol: TCP
       Port: !Ref ServicePort
-      Targets:
-        - Id: !Ref ClientVpnAddress
-          Port: !Ref ServicePort
-          # "all" is what marks this as a target outside the VPC, reached over
-          # routing rather than sitting in one of the subnets.
-          AvailabilityZone: all
+      # Targets are registered by the installer, one per workstation, because
+      # this template cannot know how many there will be. "all" is what marks a
+      # target as living outside the VPC, reached over routing.
       HealthCheckProtocol: HTTP
-      HealthCheckPath: /hc
+      HealthCheckPath: !Ref HealthCheckPath
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
       UnhealthyThresholdCount: 3
@@ -384,8 +570,7 @@ Resources:
   DnsRecord:
     Type: AWS::Route53::RecordSet
     Properties:
-      HostedZoneId:
-        Fn::ImportValue: !Sub '${DnsStackName}-HostedZoneId'
+      HostedZoneId: !Ref HostedZoneId
       Name: !Sub '${ServiceDomainName}.'
       Type: A
       AliasTarget:
@@ -393,25 +578,95 @@ Resources:
         HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
         EvaluateTargetHealth: false
 
+  # --- Telling somebody ----------------------------------------------------
+  AlarmTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlarmEmail
+    Properties:
+      DisplayName: !Sub '${AWS::StackName} gateway'
+      Subscription:
+        - Endpoint: !Ref AlarmEmail
+          Protocol: email
+
+  # The gateway is the one part that should never be down on purpose.
+  GatewayDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: HasAlarmEmail
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-gateway-down'
+      AlarmDescription: >-
+        No gateway instance is in service, so the hostname is dark and the
+        Auto Scaling group has not managed to replace it.
+      Namespace: AWS/AutoScaling
+      MetricName: GroupInServiceInstances
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref GatewayGroup
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
+  TunnelDownAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlarmsTunnel
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-no-workstation-connected'
+      AlarmDescription: >-
+        No workstation has completed a WireGuard handshake recently, so the
+        hostname answers TLS and then nothing.
+      Namespace: XpremVpn
+      MetricName: ConnectedPeers
+      Dimensions:
+        - Name: StackName
+          Value: !Ref AWS::StackName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
 Outputs:
   ServiceUrl:
-    Description: BASE_URL for the on-premises xprem deployment
+    Description: Public base URL for the on-premises deployment
     Value: !Sub 'https://${ServiceDomainName}'
 
   HealthCheckUrl:
-    Value: !Sub 'https://${ServiceDomainName}/hc'
+    Value: !Sub 'https://${ServiceDomainName}${HealthCheckPath}'
 
   GatewayPublicIp:
-    Description: WireGuard Endpoint for /etc/wireguard/wg0.conf on the workstation
+    Description: WireGuard Endpoint for each workstation's wg0.conf
     Value: !Ref GatewayEip
 
-  ServerPublicKeyCommand:
-    Description: Reads the gateway's generated WireGuard public key
-    Value: !Sub 'aws ssm get-parameter --name ${ServerPublicKeyParameter} --query Parameter.Value --output text'
+  TargetGroupArn:
+    Description: Target group the installer registers each workstation in
+    Value: !Ref TargetGroup
 
-  ClientVpnAddress:
-    Description: Tunnel address the workstation must assign to wg0
-    Value: !Ref ClientVpnAddress
+  PeersParameter:
+    Description: SSM parameter holding the WireGuard peer list
+    Value: !Sub '/${AWS::StackName}/wireguard/peers'
+
+  ServerPublicKeyParameter:
+    Description: SSM parameter the gateway publishes its public key to
+    Value: !Sub '/${AWS::StackName}/wireguard/server-public-key'
+
+  GatewayGroupName:
+    Value: !Ref GatewayGroup
 
   LoadBalancerDnsName:
     Value: !GetAtt LoadBalancer.DNSName
+
+  AlarmTopicArn:
+    Condition: HasAlarmEmail
+    Value: !Ref AlarmTopic

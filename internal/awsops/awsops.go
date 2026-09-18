@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Package awsops is every AWS call the installer makes. It uses the SDK
 // directly rather than shelling out to the AWS CLI, so the installed product
 // has no dependency the user has to install first.
@@ -18,17 +19,28 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
 	cfntypes "github.com/aws/aws-sdk-go-v2/service/cloudformation/types"
+	"github.com/aws/aws-sdk-go-v2/service/cloudfront"
+	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	"github.com/aws/aws-sdk-go-v2/service/elasticloadbalancingv2"
+	"github.com/aws/aws-sdk-go-v2/service/route53"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
 
 type Client struct {
-	Region string
-	CFN    *cloudformation.Client
-	SSM    *ssm.Client
-	ELB    *elasticloadbalancingv2.Client
-	STS    *sts.Client
+	Region  string
+	CFN     *cloudformation.Client
+	SSM     *ssm.Client
+	ELB     *elasticloadbalancingv2.Client
+	STS     *sts.Client
+	EC2     *ec2.Client
+	Route53 *route53.Client
+
+	// Only the publishing side uses these; a customer install never touches
+	// either service.
+	S3         *s3.Client
+	CloudFront *cloudfront.Client
 }
 
 func newClient(cfg aws.Config) *Client {
@@ -38,6 +50,17 @@ func newClient(cfg aws.Config) *Client {
 		SSM:    ssm.NewFromConfig(cfg),
 		ELB:    elasticloadbalancingv2.NewFromConfig(cfg),
 		STS:    sts.NewFromConfig(cfg),
+		EC2:    ec2.NewFromConfig(cfg),
+		// Route53 is global; its endpoint lives in us-east-1 whatever region
+		// the rest of the deployment is in.
+		Route53: route53.NewFromConfig(cfg, func(options *route53.Options) {
+			options.Region = "us-east-1"
+		}),
+		S3: s3.NewFromConfig(cfg),
+		// CloudFront is global, like Route53.
+		CloudFront: cloudfront.NewFromConfig(cfg, func(options *cloudfront.Options) {
+			options.Region = "us-east-1"
+		}),
 	}
 }
 
@@ -213,8 +236,19 @@ func (c *Client) DeployStack(ctx context.Context, name, templateBody string, par
 		}
 	}
 
+	// Only parameters this template declares may be sent. An older stack can
+	// hold parameters a newer template has dropped, and CloudFormation rejects
+	// the whole change set for one of those rather than ignoring it.
+	declared, err := c.declaredParameters(ctx, templateBody)
+	if err != nil {
+		return err
+	}
+
 	var input []cfntypes.Parameter
 	for key, value := range parameters {
+		if !declared[key] {
+			continue
+		}
 		input = append(input, cfntypes.Parameter{
 			ParameterKey:   aws.String(key),
 			ParameterValue: aws.String(value),
@@ -224,11 +258,19 @@ func (c *Client) DeployStack(ctx context.Context, name, templateBody string, par
 		if _, overridden := parameters[key]; overridden {
 			continue
 		}
+		if !declared[key] {
+			continue
+		}
 		input = append(input, cfntypes.Parameter{
 			ParameterKey:     aws.String(key),
 			UsePreviousValue: aws.Bool(true),
 		})
 	}
+	// Sorted so two runs with the same inputs produce the same change set, and
+	// "no changes" means what it says.
+	sort.Slice(input, func(left, right int) bool {
+		return aws.ToString(input[left].ParameterKey) < aws.ToString(input[right].ParameterKey)
+	})
 
 	changeSetName := fmt.Sprintf("wiregard-%d", time.Now().Unix())
 	if _, err := c.CFN.CreateChangeSet(ctx, &cloudformation.CreateChangeSetInput{
@@ -263,6 +305,23 @@ func (c *Client) DeployStack(ctx context.Context, name, templateBody string, par
 	}
 
 	return c.waitForStack(ctx, name, onProgress)
+}
+
+// declaredParameters asks CloudFormation what the template accepts, rather than
+// parsing the YAML here: the answer has to match what the service will accept,
+// not what a second parser thinks the file says.
+func (c *Client) declaredParameters(ctx context.Context, templateBody string) (map[string]bool, error) {
+	out, err := c.CFN.GetTemplateSummary(ctx, &cloudformation.GetTemplateSummaryInput{
+		TemplateBody: aws.String(templateBody),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading the template's parameters: %w", err)
+	}
+	declared := map[string]bool{}
+	for _, parameter := range out.Parameters {
+		declared[aws.ToString(parameter.ParameterKey)] = true
+	}
+	return declared, nil
 }
 
 func (c *Client) waitForChangeSet(ctx context.Context, stackName, changeSetName string) (bool, error) {
@@ -382,6 +441,23 @@ func (c *Client) FailureReasons(ctx context.Context, name string) []string {
 	return reasons
 }
 
+// StackOutputs reads every output at once. The installer needs five of them,
+// and five DescribeStacks calls to answer one question is five chances to be
+// throttled.
+func (c *Client) StackOutputs(ctx context.Context, stackName string) (map[string]string, error) {
+	out, err := c.CFN.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{StackName: aws.String(stackName)})
+	if err != nil {
+		return nil, err
+	}
+	outputs := map[string]string{}
+	for _, stack := range out.Stacks {
+		for _, output := range stack.Outputs {
+			outputs[aws.ToString(output.OutputKey)] = aws.ToString(output.OutputValue)
+		}
+	}
+	return outputs, nil
+}
+
 func (c *Client) StackOutput(ctx context.Context, stackName, key string) (string, error) {
 	out, err := c.CFN.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{StackName: aws.String(stackName)})
 	if err != nil {
@@ -461,28 +537,13 @@ func (c *Client) DeleteParameter(ctx context.Context, name string) error {
 	return err
 }
 
-func (c *Client) TargetGroupARN(ctx context.Context, nameContains string) (string, error) {
-	out, err := c.ELB.DescribeTargetGroups(ctx, &elasticloadbalancingv2.DescribeTargetGroupsInput{})
+// ProfileRegion reads the region a profile already names, so the installer does
+// not have to ask for something the user has configured once already. Empty
+// when the profile sets none.
+func ProfileRegion(ctx context.Context, profile string) string {
+	cfg, err := config.LoadDefaultConfig(ctx, config.WithSharedConfigProfile(profile))
 	if err != nil {
-		return "", err
+		return ""
 	}
-	for _, group := range out.TargetGroups {
-		if strings.Contains(aws.ToString(group.TargetGroupName), nameContains) {
-			return aws.ToString(group.TargetGroupArn), nil
-		}
-	}
-	return "", fmt.Errorf("no target group matching %q", nameContains)
-}
-
-func (c *Client) TargetHealth(ctx context.Context, targetGroupARN string) (string, error) {
-	out, err := c.ELB.DescribeTargetHealth(ctx, &elasticloadbalancingv2.DescribeTargetHealthInput{
-		TargetGroupArn: aws.String(targetGroupARN),
-	})
-	if err != nil {
-		return "", err
-	}
-	if len(out.TargetHealthDescriptions) == 0 {
-		return "no targets registered", nil
-	}
-	return string(out.TargetHealthDescriptions[0].TargetHealth.State), nil
+	return cfg.Region
 }

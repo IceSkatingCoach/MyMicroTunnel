@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: CI
+
+# Runs on macOS because half of what this repository ships is a Swift app and a
+# signed installer package, and neither of those can be built anywhere else.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    name: Go
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: gofmt
+        # Reported as a list of files rather than as a diff nobody reads.
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      - name: Build universal
+        # The package ships one binary for both architectures. A build that only
+        # works on the runner's own architecture is a package that fails to
+        # launch on half the Macs it is installed on.
+        run: |
+          make engine
+          lipo -archs build/wiregard-mini-vpn | tee /dev/stderr | grep -q arm64
+          lipo -archs build/wiregard-mini-vpn | grep -q x86_64
+
+      - name: Smoke test the built binary
+        run: |
+          ./build/wiregard-mini-vpn version
+          ./build/wiregard-mini-vpn --help
+
+  app:
+    name: Menu bar app
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build the app bundle
+        # This also fetches and builds wireguard-go, which is the one
+        # third-party binary the package ships.
+        run: make app
+
+      - name: Check both slices are present
+        run: |
+          binary=menubar/build/XpremVpn.app/Contents/MacOS/XpremVpn
+          lipo -archs "$binary" | tee /dev/stderr | grep -q arm64
+          lipo -archs "$binary" | grep -q x86_64
+
+      - name: Check the bundle carries its own WireGuard
+        # A customer without Homebrew has to be able to install this. If
+        # wireguard-go is missing from the bundle, the tunnel cannot come up and
+        # the failure only shows on their machine.
+        run: |
+          engine=menubar/build/XpremVpn.app/Contents/Resources/wireguard-go
+          test -x "$engine"
+          lipo -archs "$engine" | tee /dev/stderr | grep -q arm64
+          lipo -archs "$engine" | grep -q x86_64
+
+      - name: Check the bundle is stamped
+        # __VERSION__ surviving into the built bundle means the Makefile's
+        # substitution silently did nothing, and every install would report
+        # itself as a placeholder.
+        run: |
+          plist=menubar/build/XpremVpn.app/Contents/Info.plist
+          ! grep -q __VERSION__ "$plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist"
+
+  updates:
+    name: Update feed
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Fetch Sparkle
+        run: make sparkle
+
+      - name: Check the feed tooling builds and refuses a feed it cannot write
+        # No signing key on CI by default, so this cannot cut a release. What it
+        # proves is that cmd/appcast compiles, finds Sparkle's tools, and stops
+        # with an explanation rather than writing a feed pointing nowhere.
+        run: |
+          go build ./cmd/appcast
+          if go run ./cmd/appcast 2>/dev/null; then
+            echo "appcast wrote a feed with no publication URL" >&2
+            exit 1
+          fi
+
+  template:
+    name: CloudFormation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install cfn-lint
+        run: pip install --disable-pip-version-check cfn-lint
+
+      - name: Lint the templates
+        run: |
+          cfn-lint infra/cloudformation-xprem-onprem-vpn.yaml \
+                   infra/cloudformation-updates.yaml
+
+  vulnerabilities:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: govulncheck
+        # The installer writes root-owned files and holds AWS credentials. A
+        # known-vulnerable dependency in it is worth a failed build.
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...

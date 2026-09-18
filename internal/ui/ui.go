@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // Package ui is the installer's terminal conversation: progress lines, prompts
 // and the one input that must not be echoed.
 package ui

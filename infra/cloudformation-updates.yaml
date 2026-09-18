@@ -1,0 +1,278 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+AWSTemplateFormatVersion: '2010-09-09'
+
+# The update feed: a private S3 bucket holding the appcast and the release
+# archives, published through one CloudFront distribution.
+#
+# WHOSE ACCOUNT THIS IS
+# ---------------------
+# Not the customer's. cloudformation-xprem-onprem-vpn.yaml is deployed once per
+# customer, into their account, and pays for itself there. This stack is the
+# vendor's, deployed once, and every copy of the app ever shipped reads from it.
+# The two have nothing to do with each other and should not share a stack, a
+# region, or a lifecycle.
+#
+# WHY CLOUDFRONT RATHER THAN API GATEWAY
+# --------------------------------------
+# API Gateway caps an integration payload at 10 MB, and there is no setting that
+# raises it. The appcast is about a kilobyte and would fit; the release archive
+# is upwards of 30 MB and would not, so the archive would have to be served some
+# other way and the deployment would end up with two front doors to explain.
+#
+# CloudFront serves both from one hostname, costs less per request, and caches
+# at the edge — which matters for a file every installed copy polls on a timer.
+#
+# WHAT PROTECTS THE USER
+# ----------------------
+# Not this. Sparkle refuses any archive whose EdDSA signature does not verify
+# against the public key compiled into the app, so a compromised bucket or a
+# hostile network cannot push anybody an update. The transport is a convenience;
+# the signature is the security boundary. That is why the archives are a plain
+# public download and nothing here tries to gate them.
+#
+# DEPLOY THIS IN us-east-1
+# ------------------------
+# CloudFront only reads ACM certificates from us-east-1, so a custom domain
+# forces the whole stack there. Without a custom domain the region does not
+# matter, but there is no reason to split it.
+
+Parameters:
+  BucketName:
+    Type: String
+    Description: >-
+      Globally unique name for the bucket holding the appcast and the release
+      archives. Bucket names are worldwide, so this is not defaulted.
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    ConstraintDescription: must be a valid S3 bucket name
+
+  DomainName:
+    Type: String
+    Default: ''
+    Description: >-
+      Hostname to serve the feed from, for example downloads.example.com. Left
+      empty, CloudFront's own *.cloudfront.net name is used — which works, but
+      is not a name to bake into software you will ship for years.
+
+  HostedZoneId:
+    Type: String
+    Default: ''
+    Description: >-
+      Public hosted zone authoritative for DomainName. Required when DomainName
+      is set; the installer's own discovery does not apply here, because this
+      stack is deployed by hand and rarely.
+
+  RetainOldReleases:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: >-
+      Keep superseded archives. An app that has not been opened in a year still
+      asks for the version its feed named at the time, so deleting old archives
+      breaks updates for exactly the users who most need one.
+
+Conditions:
+  HasDomain: !Not [!Equals [!Ref DomainName, '']]
+  ExpireOldReleases: !Equals [!Ref RetainOldReleases, 'false']
+
+Resources:
+  # --- storage -------------------------------------------------------------
+  UpdatesBucket:
+    Type: AWS::S3::Bucket
+    # Retained on stack deletion: the archives every installed copy downloads
+    # from are not something to lose to a mistyped command.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Ref BucketName
+      # Versioned so that overwriting an archive a published feed already points
+      # at is recoverable rather than final.
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      # Nothing is public. CloudFront reaches the bucket through the origin
+      # access control below, and it is the only thing that can.
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-superseded-releases
+            Status: !If [ExpireOldReleases, Enabled, Disabled]
+            Prefix: releases/
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+          - Id: tidy-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  BucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref UpdatesBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: OnlyThisDistributionMayRead
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+          - Sid: NothingUnencryptedInTransit
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketName}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  # --- publication ---------------------------------------------------------
+  OriginAccessControl:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-updates'
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Condition: HasDomain
+    Properties:
+      DomainName: !Ref DomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref DomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  # Five minutes. Sparkle polls on a timer, so this is the longest a published
+  # update can sit unseen; an hour here would mean an hour's delay on a release
+  # somebody is waiting for.
+  FeedCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub '${AWS::StackName}-appcast'
+        DefaultTTL: 300
+        MinTTL: 0
+        MaxTTL: 300
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+
+  # An archive never changes: its name carries the version. Caching it for a
+  # year costs nothing and keeps a release-day download off the origin.
+  ArchiveCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub '${AWS::StackName}-releases'
+        DefaultTTL: 31536000
+        MinTTL: 31536000
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: false
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub '${AWS::StackName} update feed'
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: PriceClass_100
+        Aliases: !If [HasDomain, [!Ref DomainName], !Ref 'AWS::NoValue']
+        ViewerCertificate: !If
+          - HasDomain
+          - AcmCertificateArn: !Ref Certificate
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: updates
+            DomainName: !GetAtt UpdatesBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt OriginAccessControl.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ''
+        DefaultCacheBehavior:
+          TargetOriginId: updates
+          # Sparkle will not read a feed over plain HTTP, and there is no reason
+          # to offer one.
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: !Ref FeedCachePolicy
+        CacheBehaviors:
+          - PathPattern: releases/*
+            TargetOriginId: updates
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [GET, HEAD]
+            CachedMethods: [GET, HEAD]
+            # Already a compressed archive; compressing it again spends CPU to
+            # make it very slightly larger.
+            Compress: false
+            CachePolicyId: !Ref ArchiveCachePolicy
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasDomain
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub '${DomainName}.'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt Distribution.DomainName
+        # The fixed zone id every CloudFront distribution lives in. It is a
+        # constant, not this distribution's own.
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+Outputs:
+  FeedUrl:
+    Description: >-
+      SUFeedURL. This exact string is compiled into every app that is shipped,
+      so it cannot change afterwards without orphaning every installed copy.
+    Value: !If
+      - HasDomain
+      - !Sub 'https://${DomainName}/appcast.xml'
+      - !Sub 'https://${Distribution.DomainName}/appcast.xml'
+
+  ArchiveBaseUrl:
+    Description: Where release archives are downloaded from, i.e. APPCAST_BASE_URL
+    Value: !If
+      - HasDomain
+      - !Sub 'https://${DomainName}/releases'
+      - !Sub 'https://${Distribution.DomainName}/releases'
+
+  BucketName:
+    Value: !Ref UpdatesBucket
+
+  DistributionId:
+    Description: Needed to invalidate the cached appcast after publishing one
+    Value: !Ref Distribution

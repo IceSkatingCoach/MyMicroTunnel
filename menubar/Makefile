@@ -1,17 +1,64 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 APP    := XpremVpn.app
 DEST   := build/$(APP)
 BIN    := $(DEST)/Contents/MacOS/XpremVpn
 ENGINE := $(DEST)/Contents/Resources/wiregard-mini-vpn
+WGGO   := $(DEST)/Contents/Resources/wireguard-go
 
 SOURCES := XpremVpn.swift SetupWindow.swift
 
+SPARKLE  := ../third_party/sparkle
+# Set both to build an app that can update itself. Left empty, the app builds
+# and runs with the updater switched off and says so in its menu, which is what
+# a source checkout wants.
+APPCAST_FEED_URL   ?=
+SPARKLE_PUBLIC_KEY ?=
+
+# Inherited from the parent Makefile when it drives this one, and worked out
+# here when somebody builds the app on its own.
+VERSION ?= $(shell cat ../VERSION)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+
 # Ships as a plain swiftc build rather than an Xcode project: two source files,
 # no dependencies, and nothing that needs the full Xcode install.
+#
+# Built once per architecture and merged, because swiftc emits one slice at a
+# time. macOS 13 is the floor for both.
 app: engine
-	mkdir -p $(DEST)/Contents/MacOS $(DEST)/Contents/Resources
-	swiftc -O -parse-as-library -target arm64-apple-macos13 -o $(BIN) $(SOURCES)
-	cp Info.plist $(DEST)/Contents/Info.plist
+	mkdir -p $(DEST)/Contents/MacOS $(DEST)/Contents/Resources build/slices
+	mkdir -p $(DEST)/Contents/Frameworks
+	# Sparkle is a framework, so it is linked against here and copied into the
+	# bundle below; @rpath is what lets the binary find it there at launch.
+	swiftc -O -parse-as-library -target arm64-apple-macos13 \
+		-F $(SPARKLE) -framework Sparkle \
+		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+		-o build/slices/XpremVpn.arm64 $(SOURCES)
+	swiftc -O -parse-as-library -target x86_64-apple-macos13 \
+		-F $(SPARKLE) -framework Sparkle \
+		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
+		-o build/slices/XpremVpn.x86_64 $(SOURCES)
+	lipo -create -output $(BIN) build/slices/XpremVpn.arm64 build/slices/XpremVpn.x86_64
+	rm -rf build/slices
+	rm -rf $(DEST)/Contents/Frameworks/Sparkle.framework
+	cp -R $(SPARKLE)/Sparkle.framework $(DEST)/Contents/Frameworks/
+	sed -e 's/__VERSION__/$(VERSION)/g' -e 's/__BUILD__/$(COMMIT)/g' Info.plist > $(DEST)/Contents/Info.plist
 	cp ../build/wiregard-mini-vpn $(ENGINE)
+	# Shipped inside the bundle so a customer needs neither Homebrew nor a
+	# second installer before this one.
+	cp ../third_party/wireguard-go $(WGGO)
+	# The updater keys are added only when there is somewhere to update from.
+	# An SUFeedURL of "" makes Sparkle log an error nobody reads; no key at all
+	# makes the app say plainly that it cannot update.
+	@if [ -n "$(APPCAST_FEED_URL)" ] && [ -n "$(SPARKLE_PUBLIC_KEY)" ]; then \
+		/usr/libexec/PlistBuddy -c 'Add :SUFeedURL string $(APPCAST_FEED_URL)' $(DEST)/Contents/Info.plist; \
+		/usr/libexec/PlistBuddy -c 'Add :SUPublicEDKey string $(SPARKLE_PUBLIC_KEY)' $(DEST)/Contents/Info.plist; \
+		/usr/libexec/PlistBuddy -c 'Add :SUEnableInstallerLauncherService bool true' $(DEST)/Contents/Info.plist; \
+		echo "  updates: $(APPCAST_FEED_URL)"; \
+	elif [ -n "$(APPCAST_FEED_URL)$(SPARKLE_PUBLIC_KEY)" ]; then \
+		echo "  ! APPCAST_FEED_URL and SPARKLE_PUBLIC_KEY must both be set; building without updates"; \
+	else \
+		echo "  updates: disabled (no APPCAST_FEED_URL)"; \
+	fi
 	# Ad-hoc signature keeps the bundle identity stable across rebuilds, so
 	# macOS does not treat each build as a brand new app. Packaging replaces
 	# this with the Developer ID signature.
@@ -20,8 +67,8 @@ app: engine
 # The setup window drives this binary instead of reimplementing the deployment,
 # so the app cannot be built without it.
 engine:
-	mkdir -p ../build
-	cd .. && go build -trimpath -ldflags "-s -w" -o build/wiregard-mini-vpn ./cmd/wiregard-mini-vpn
+	$(MAKE) -C .. engine
+	$(MAKE) -C .. sparkle
 
 install: app
 	rm -rf /Applications/$(APP)

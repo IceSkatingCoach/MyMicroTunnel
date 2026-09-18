@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 package setup
 
 import (
@@ -13,6 +14,7 @@ import (
 	"github.com/IceSkatingCoach/wiregard_mini_vpn/infra"
 	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/awsops"
 	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/sys"
+	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/tunnel"
 	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/ui"
 )
 
@@ -25,33 +27,29 @@ type Options struct {
 	SettingsPath string
 }
 
-// Prerequisites returns the discovered wg-quick path. The AWS CLI is not among
-// them: this binary talks to AWS itself.
+// Prerequisites checks that the one native thing this product needs is present.
+//
+// It used to install wireguard-tools through Homebrew, which meant a customer
+// without Homebrew had to run an installer before running the installer, and a
+// customer with it ended up trusting a root-capable binary in a directory their
+// own account could write to. The package now carries wireguard-go itself, so
+// there is nothing to fetch and nothing to trust that did not arrive signed.
 func Prerequisites(interactive bool) string {
 	ui.Step("Checking prerequisites")
 
-	wgQuick := sys.Tool("wg-quick")
-	if wgQuick == "" {
-		if !interactive {
-			ui.Fail("wg-quick is not installed. Install it with `brew install wireguard-tools`.")
-		}
-		ui.Info("WireGuard tools are missing; installing with Homebrew.")
-		if sys.RunInteractive(sys.Tool("brew"), "install", "wireguard-tools") != 0 {
-			ui.Fail("`brew install wireguard-tools` failed.")
-		}
-		if wgQuick = sys.Tool("wg-quick"); wgQuick == "" {
-			ui.Fail("wg-quick is still not on PATH after installing.")
-		}
+	engine, err := tunnel.Engine("")
+	if err != nil {
+		ui.Fail("%v", err)
 	}
-	ui.Done("wg-quick at %s", wgQuick)
-	return wgQuick
+	ui.Done("wireguard-go at %s", engine)
+	return engine
 }
 
 // PublicKeyPath records the public half where the user can read it. Public keys
 // are not secret, and keeping a copy outside /etc/wireguard is what lets a
 // re-run recognise an existing tunnel without asking for root first. Without
-// it, a non-interactive run would mint a new keypair, change ClientPublicKey,
-// replace the gateway, and then read a stale server key out of SSM.
+// it, a non-interactive run would mint a new keypair and register a second peer
+// whose private half this machine does not have.
 func PublicKeyPath() string {
 	return filepath.Join(AppConfigDir(), "client.pub")
 }
@@ -67,20 +65,25 @@ func EnsureClientKey(interactive bool) string {
 		return strings.TrimSpace(string(recorded))
 	}
 
-	if existing := sys.Run("/usr/bin/sudo", "-n", "cat", ClientKeyPath); existing.OK() && existing.Output != "" {
-		ui.Done("Reusing the existing key")
-		return recordPublicKey(sys.RunWithInput(existing.Output+"\n", sys.Tool("wg"), "pubkey").Output)
-	}
-	if interactive {
-		if existing := sys.Run("/usr/bin/sudo", "cat", ClientKeyPath); existing.OK() && existing.Output != "" {
-			ui.Done("Reusing the existing key")
-			return recordPublicKey(sys.RunWithInput(existing.Output+"\n", sys.Tool("wg"), "pubkey").Output)
+	for _, sudo := range [][]string{{"-n", "cat", ClientKeyPath}, {"cat", ClientKeyPath}} {
+		if !interactive && sudo[0] != "-n" {
+			continue
 		}
+		existing := sys.Run("/usr/bin/sudo", sudo...)
+		if !existing.OK() || existing.Output == "" {
+			continue
+		}
+		public, err := tunnel.PublicKey(strings.TrimSpace(existing.Output))
+		if err != nil {
+			ui.Fail("%s does not hold a WireGuard key: %v", ClientKeyPath, err)
+		}
+		ui.Done("Reusing the existing key")
+		return recordPublicKey(public)
 	}
 
-	private := sys.Run(sys.Tool("wg"), "genkey")
-	if !private.OK() || private.Output == "" {
-		ui.Fail("`wg genkey` produced nothing.")
+	private, err := tunnel.GenerateKey()
+	if err != nil {
+		ui.Fail("Could not generate a WireGuard key: %v", err)
 	}
 
 	// Staged in the user's own directory here; the root-owned copy is written
@@ -88,12 +91,16 @@ func EnsureClientKey(interactive bool) string {
 	if err := os.MkdirAll(stagingDir(), 0o700); err != nil {
 		ui.Fail("Could not create %s: %v", stagingDir(), err)
 	}
-	if err := os.WriteFile(filepath.Join(stagingDir(), "client.key"), []byte(private.Output+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(stagingDir(), "client.key"), []byte(private+"\n"), 0o600); err != nil {
 		ui.Fail("Could not stage the client key: %v", err)
 	}
 	ui.Done("Key generated")
 
-	return recordPublicKey(sys.RunWithInput(private.Output+"\n", sys.Tool("wg"), "pubkey").Output)
+	public, err := tunnel.PublicKey(private)
+	if err != nil {
+		ui.Fail("Could not derive the public key: %v", err)
+	}
+	return recordPublicKey(public)
 }
 
 func recordPublicKey(publicKey string) string {
@@ -110,46 +117,65 @@ func stagingDir() string {
 	return filepath.Join(os.TempDir(), "wiregard-mini-vpn-staging")
 }
 
+// Discover fills in everything about the customer's account that the template
+// needs and nobody should have to look up by hand.
+//
+// The first version of this stack carried one particular account's vpc-,
+// subnet- and rtb- ids as parameter defaults. That is workable for a single
+// deployment and impossible for a product: the account belongs to the customer,
+// and an installer that opens by asking for a route table id is an installer
+// nobody finishes.
+func Discover(ctx context.Context, client *awsops.Client, s *Settings) {
+	ui.Step("Looking at the account")
+
+	network, err := client.DiscoverNetwork(ctx, s.VpcID)
+	if err != nil {
+		ui.Fail("%v", err)
+	}
+	s.VpcID = network.VpcID
+	s.VpcCidr = network.VpcCidr
+	s.SubnetIDs = network.PublicSubnets
+	s.GatewaySubnetIDs = network.GatewaySubnets
+	s.RouteTableIDs = network.RouteTableIDs
+	ui.Done("VPC %s (%s), %d public subnet(s)", s.VpcID, s.VpcCidr, len(s.SubnetIDs))
+
+	if s.HostedZoneID == "" {
+		zone, err := client.FindHostedZone(ctx, s.DomainName)
+		if err != nil {
+			ui.Fail("%v", err)
+		}
+		s.HostedZoneID = zone
+	}
+	ui.Done("Hosted zone %s is authoritative for %s", s.HostedZoneID, s.DomainName)
+
+	if err := s.ValidateNetwork(); err != nil {
+		ui.Fail("%v", err)
+	}
+}
+
 // Deploy is everything that needs AWS credentials and nothing that needs root.
-func Deploy(ctx context.Context, client *awsops.Client, s *Settings, clientPublicKey string) {
+func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 	ui.Step("Deploying %s (this takes a few minutes)", s.StackName)
 
-	// Changing the client key rewrites the gateway's boot script, which means a
-	// new instance. The replacement republishes its public key, but the old
-	// value is still in Parameter Store, so a naive wait would return the dead
-	// gateway's key straight away and produce a tunnel that never handshakes.
-	// Clearing it first makes the wait mean what it says.
-	if previous, found := client.StackParameter(ctx, s.StackName, "ClientPublicKey"); found && previous != clientPublicKey {
-		ui.Warn("The client key changed; the gateway will be replaced.")
-		if err := client.DeleteParameter(ctx, ServerKeyParam); err != nil {
-			ui.Fail("Could not clear %s before the replacement: %v", ServerKeyParam, err)
-		}
-	}
-
-	parameters := map[string]string{
-		"ClientPublicKey":   clientPublicKey,
-		"ServiceDomainName": s.DomainName,
-		"DnsStackName":      s.DNSStackName,
-		"ServicePort":       s.ServicePort,
-		"ClientVpnAddress":  s.ClientAddress,
-		"GatewayVpnAddress": s.GatewayAddress,
-	}
-
-	if err := client.DeployStack(ctx, s.StackName, infra.Template, parameters, func(resource string) {
+	if err := client.DeployStack(ctx, s.StackName, infra.Template, StackParameters(*s), func(resource string) {
 		ui.Info("%s", resource)
 	}); err != nil {
 		ui.Fail("The deployment failed: %v", err)
 	}
 	ui.Done("Stack deployed")
 
-	endpoint, err := client.StackOutput(ctx, s.StackName, "GatewayPublicIp")
+	outputs, err := client.StackOutputs(ctx, s.StackName)
 	if err != nil {
-		ui.Fail("Could not read the gateway address: %v", err)
+		ui.Fail("Could not read the stack outputs: %v", err)
 	}
-	s.Endpoint = endpoint
+	s.Endpoint = outputs["GatewayPublicIp"]
+	s.TargetGroupARN = outputs["TargetGroupArn"]
+	if s.Endpoint == "" || s.TargetGroupARN == "" {
+		ui.Fail("The stack did not report a gateway address and a target group.")
+	}
 
 	ui.Step("Waiting for the gateway to publish its public key")
-	serverKey, err := client.WaitForParameter(ctx, ServerKeyParam, 5*time.Minute)
+	serverKey, err := client.WaitForParameter(ctx, s.ServerKeyParameter(), 5*time.Minute)
 	if err != nil {
 		ui.Fail("%v. Check the instance's /var/log/cloud-init-output.log over SSM Session Manager.", err)
 	}
@@ -157,38 +183,99 @@ func Deploy(ctx context.Context, client *awsops.Client, s *Settings, clientPubli
 	ui.Done("Gateway key retrieved")
 }
 
-// TunnelConfig is the wg-quick config. Separate from writing it, because the
-// privileged stage may run in another process and only needs the bytes.
-func TunnelConfig(s Settings) string {
-	return strings.Join([]string{
-		"[Interface]",
-		"Address = " + s.ClientAddress + "/32",
-		"MTU = 1380",
-		"# Reads the key from the file the installer created, so the private key is",
-		"# not duplicated into this config.",
-		"PostUp = wg set %i private-key " + ClientKeyPath,
-		"",
-		"[Peer]",
-		"PublicKey = " + s.ServerPublicKey,
-		"AllowedIPs = 10.100.0.0/24, 172.31.0.0/16",
-		"Endpoint = " + s.Endpoint + ":51820",
-		"# Keeps the NAT mapping open, and re-pins the tunnel when this machine's",
-		"# public address changes.",
-		"PersistentKeepalive = 25",
-		"",
-	}, "\n")
+// StackParameters is what the template is told about this deployment. Kept
+// separate from the deploy so a test can hold it against the template's own
+// parameter list: a name that drifts on one side is silently dropped by
+// CloudFormation on the other, and the symptom is a stack that deploys
+// successfully and serves nothing.
+func StackParameters(s Settings) map[string]string {
+	return map[string]string{
+		"ServiceDomainName": s.DomainName,
+		"HostedZoneId":      s.HostedZoneID,
+		"VpcId":             s.VpcID,
+		"VpcCidr":           s.VpcCidr,
+		"SubnetIds":         strings.Join(s.SubnetIDs, ","),
+		"GatewaySubnetIds":  strings.Join(s.GatewaySubnetIDs, ","),
+		"RouteTableIds":     strings.Join(s.RouteTableIDs, ","),
+		"VpnCidr":           s.VpnCidr,
+		"GatewayVpnAddress": s.GatewayAddress,
+		"ServicePort":       s.ServicePort,
+		"HealthCheckPath":   s.HealthCheckPath,
+		"AlarmEmail":        s.AlarmEmail,
+		"AlarmOnTunnelDown": fmt.Sprintf("%t", s.AlarmOnTunnelDown),
+	}
 }
 
+// RegisterWorkstation puts this machine into the two lists that decide whether
+// traffic reaches it: the gateway's peers, and the load balancer's targets.
+//
+// Neither is a CloudFormation property any more. A peer used to be a stack
+// parameter, which meant adding a second workstation rewrote the gateway's boot
+// script and replaced the instance — taking the first workstation offline to
+// add the second one.
+func RegisterWorkstation(ctx context.Context, client *awsops.Client, s Settings, clientPublicKey string) {
+	ui.Step("Registering %s", s.PeerLabel)
+
+	peers, err := client.UpsertPeer(ctx, s.PeersParameter(), awsops.Peer{
+		PublicKey: clientPublicKey,
+		Address:   s.ClientAddress,
+		Label:     s.PeerLabel,
+	})
+	if err != nil {
+		ui.Fail("Could not register this machine as a peer: %v", err)
+	}
+	ui.Done("%d workstation(s) in the peer list", len(peers))
+
+	if err := client.RegisterTarget(ctx, s.TargetGroupARN, s.ClientAddress, s.Port()); err != nil {
+		ui.Fail("Could not register %s behind the load balancer: %v", s.ClientAddress, err)
+	}
+	ui.Done("%s:%s is a load balancer target", s.ClientAddress, s.ServicePort)
+}
+
+// TunnelConfig is the contents of /etc/wireguard/<interface>.conf. Separate
+// from writing it, because the privileged stage may run in another process and
+// only needs the bytes.
+func TunnelConfig(s Settings) string {
+	return tunnel.Marshal(tunnel.File{
+		Address:        s.ClientAddress,
+		MTU:            TunnelMTU,
+		PrivateKeyPath: ClientKeyPath,
+		Config: tunnel.Config{
+			Peers: []tunnel.Peer{{
+				PublicKey: s.ServerPublicKey,
+				Endpoint:  s.Endpoint + ":51820",
+				// The tunnel subnet carries replies to the gateway; the VPC
+				// range is where the load balancer's nodes live. Dropping
+				// either produces a tunnel that comes up and serves nothing.
+				AllowedIPs:          []string{s.VpnCidr, s.VpcCidr},
+				PersistentKeepalive: 25,
+			}},
+		},
+	})
+}
+
+// SudoersRule lets the menu bar move the tunnel without a password prompt on
+// every toggle.
+//
+// It names the helper in /Library/PrivilegedHelperTools rather than the copy on
+// the path. See HelperPath for why that distinction is the difference between a
+// narrow grant and a root shell.
 func SudoersRule(s Settings, username string) string {
 	return strings.Join([]string{
 		"# Installed by wiregard_mini_vpn. Lets the menu bar app raise and drop the",
 		"# tunnel without a password prompt on every toggle.",
 		"#",
 		"# Scope: these two exact command lines only. This is not a general root",
-		"# shell. Its safety depends on " + s.TunnelConfigPath() + " staying",
-		"# root-owned and mode 0600, because wg-quick runs that file's PostUp as root.",
-		fmt.Sprintf("%s ALL=(root) NOPASSWD: %s up %s, %s down %s",
-			username, s.WgQuickPath, s.InterfaceName, s.WgQuickPath, s.InterfaceName),
+		"# shell. Its safety rests on two things:",
+		"#",
+		"#   · " + HelperPath + " is root-owned,",
+		"#     in a directory no package manager takes ownership of. A NOPASSWD rule",
+		"#     pointing into a user-writable directory — /opt/homebrew/bin, say — is",
+		"#     a password-free root shell for the user it names.",
+		"#   · " + s.TunnelConfigPath() + " stays root-owned and mode 0600,",
+		"#     because it names the key the helper loads and the peer it trusts.",
+		fmt.Sprintf("%s ALL=(root) NOPASSWD: %s tunnel up %s, %s tunnel down %s",
+			username, HelperPath, s.InterfaceName, HelperPath, s.InterfaceName),
 		"",
 	}, "\n")
 }
@@ -214,7 +301,7 @@ func ValidateSudoers(rule string) error {
 }
 
 // WriteRootFiles is the only part that needs root: the private key, the tunnel
-// config and the sudoers rule.
+// config, the sudoers rule, and — when asked for — the supervisor daemon.
 func WriteRootFiles(s Settings, username string, asRoot bool) error {
 	rule := SudoersRule(s, username)
 	if err := ValidateSudoers(rule); err != nil {
@@ -267,7 +354,30 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 	}
 
 	os.Remove(staged)
-	return nil
+
+	if !s.Supervise {
+		// Removed rather than left running: turning supervision off has to
+		// actually turn it off, or the daemon goes on reconciling a deployment
+		// the user has changed their mind about.
+		RemoveSupervisor(asRoot)
+		return nil
+	}
+	if !asRoot {
+		// The interactive path has no way to write into /Library/LaunchDaemons
+		// without another sudo, and doing it here keeps the number of password
+		// prompts at the one the user has already answered.
+		if err := sys.WriteAsRoot(
+			SupervisorPlist(s, SupervisorExecutable, DesiredStatePath()),
+			SupervisorPlistPath, "0644"); err != nil {
+			return err
+		}
+		sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootout", "system/"+SupervisorLabel)
+		if sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootstrap", "system", SupervisorPlistPath) != 0 {
+			return fmt.Errorf("launchctl refused the supervisor")
+		}
+		return nil
+	}
+	return InstallSupervisor(s, DesiredStatePath())
 }
 
 // InstallApp is a no-op when the package already placed the app; it only builds
@@ -306,7 +416,9 @@ func InstallApp(repoRoot string) {
 
 func RegisterLoginItem() {
 	// Opening at login only puts the switch in the menu bar; it does not raise
-	// the tunnel, which stays a deliberate act.
+	// the tunnel, which stays a deliberate act. When the supervisor is
+	// installed, the tunnel's state at boot comes from the desired-state file
+	// instead, which is the user's own last decision rather than a default.
 	sys.Run("osascript", "-e",
 		`tell application "System Events" to delete (every login item whose name is "XpremVpn")`)
 	result := sys.Run("osascript", "-e",
@@ -324,26 +436,42 @@ func RegisterLoginItem() {
 func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 	ui.Step("Verifying the whole path")
 
-	up := sys.Run("/usr/bin/sudo", "-n", s.WgQuickPath, "up", s.InterfaceName)
-	if !up.OK() && !strings.Contains(up.Output, "already exists") {
-		ui.Fail("The tunnel would not come up:\n%s", up.Output)
+	// Through sudo rather than in this process: the install may be running
+	// unprivileged, and this is the same command the menu bar is allowed to run.
+	up := sys.Run("/usr/bin/sudo", "-n", HelperPath, "tunnel", "up", s.InterfaceName)
+	if !up.OK() {
+		// A source checkout has no installed helper yet, so fall back to doing
+		// it here, which works when the install itself was started with sudo.
+		if err := RaiseTunnel(s.InterfaceName, s.TunnelConfigPath()); err != nil {
+			ui.Fail("The tunnel would not come up: %v\n%s", err, up.Output)
+		}
 	}
 	ui.Done("Tunnel is up")
 
-	if ping := sys.Run("/sbin/ping", "-c", "2", "-t", "5", s.GatewayAddress); !ping.OK() {
-		ui.Fail("The gateway at %s did not answer.", s.GatewayAddress)
+	// The gateway learns about this machine from a parameter its timer reads
+	// once a minute, so the first ping after a fresh registration can be up to
+	// that late. Retried rather than failed, because "not yet" and "never" look
+	// identical in a single attempt.
+	var reachable bool
+	for attempt := 0; attempt < 6; attempt++ {
+		if sys.Run("/sbin/ping", "-c", "2", "-t", "5", s.GatewayAddress).OK() {
+			reachable = true
+			break
+		}
+		ui.Info("waiting for the gateway to pick up this peer")
+		time.Sleep(20 * time.Second)
+	}
+	if !reachable {
+		ui.Fail("The gateway at %s did not answer. Its peer list is %s.",
+			s.GatewayAddress, s.PeersParameter())
 	}
 	ui.Done("Gateway %s answers", s.GatewayAddress)
 
-	targetGroup, err := client.TargetGroupARN(ctx, "xprem")
-	if err != nil {
-		ui.Fail("%v", err)
-	}
-
 	// Two consecutive checks 30s apart have to pass, so this takes about a minute.
 	state := "unknown"
+	var err error
 	for attempt := 0; attempt < 10; attempt++ {
-		if state, err = client.TargetHealth(ctx, targetGroup); err != nil {
+		if state, err = client.TargetHealthOf(ctx, s.TargetGroupARN, s.ClientAddress); err != nil {
 			ui.Fail("%v", err)
 		}
 		if state == "healthy" {
@@ -353,21 +481,21 @@ func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 		time.Sleep(20 * time.Second)
 	}
 	if state != "healthy" {
-		ui.Fail("The load balancer still reports the target as %q. Check that the service is listening on 0.0.0.0:%s.",
+		ui.Fail("The load balancer still reports this machine as %q. Check that the service is listening on 0.0.0.0:%s.",
 			state, s.ServicePort)
 	}
 	ui.Done("Load balancer target is healthy")
 
 	probe := &http.Client{Timeout: 15 * time.Second}
-	response, err := probe.Get("https://" + s.DomainName + "/hc")
+	response, err := probe.Get(s.HealthCheckURL())
 	if err != nil {
-		ui.Fail("https://%s/hc did not answer: %v", s.DomainName, err)
+		ui.Fail("%s did not answer: %v", s.HealthCheckURL(), err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		ui.Fail("https://%s/hc returned %d.", s.DomainName, response.StatusCode)
+		ui.Fail("%s returned %d.", s.HealthCheckURL(), response.StatusCode)
 	}
-	ui.Done("https://%s/hc returns 200", s.DomainName)
+	ui.Done("%s returns 200", s.HealthCheckURL())
 }
 
 // CurrentUsername is who the sudoers rule should name: the human, never root.
