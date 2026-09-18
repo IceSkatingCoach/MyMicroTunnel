@@ -100,16 +100,12 @@ func start(options Options) (string, error) {
 	// than shut down would be read below as this run's answer.
 	_ = os.Remove(namePath(options.Name))
 
-	command := exec.Command(engine, "utun")
-	command.Env = append(os.Environ(),
-		"WG_TUN_NAME_FILE="+namePath(options.Name),
+	output, err := runDetached(engine, []string{
+		"WG_TUN_NAME_FILE=" + namePath(options.Name),
 		"LOG_LEVEL=error",
-	)
-	// wireguard-go forks and the parent exits, so this returns as soon as the
-	// daemon is running rather than when it is ready.
-	output, err := command.CombinedOutput()
+	}, "utun")
 	if err != nil {
-		return "", fmt.Errorf("wireguard-go would not start: %w\n%s", err, strings.TrimSpace(string(output)))
+		return "", fmt.Errorf("wireguard-go would not start: %w\n%s", err, output)
 	}
 
 	deadline := time.Now().Add(15 * time.Second)
@@ -120,6 +116,40 @@ func start(options Options) (string, error) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return "", fmt.Errorf("wireguard-go started but never created %s", namePath(options.Name))
+}
+
+// runDetached starts a process that daemonises, and collects whatever it said
+// before it did.
+//
+// The obvious way to write this — exec.Command(...).CombinedOutput() — hangs
+// forever. CombinedOutput attaches pipes and waits for them to reach EOF, and
+// wireguard-go forks a child that inherits those pipes and holds them open for
+// as long as the tunnel is up. The parent exits immediately, the daemon runs
+// perfectly, and the caller waits for an EOF that will not arrive until the
+// tunnel is torn down.
+//
+// A file has no such lifetime: Run waits for the process it started and nothing
+// else, and the daemon inheriting the descriptor costs nothing.
+func runDetached(name string, environment []string, args ...string) (string, error) {
+	log, err := os.CreateTemp("", "detached-")
+	if err != nil {
+		return "", err
+	}
+	defer os.Remove(log.Name())
+	defer log.Close()
+
+	command := exec.Command(name, args...)
+	command.Env = append(os.Environ(), environment...)
+	command.Stdout = log
+	command.Stderr = log
+
+	runErr := command.Run()
+
+	said, err := os.ReadFile(log.Name())
+	if err != nil {
+		said = nil
+	}
+	return strings.TrimSpace(string(said)), runErr
 }
 
 func configure(device string, config Config) error {
