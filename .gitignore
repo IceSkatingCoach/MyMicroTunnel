@@ -4,3 +4,8 @@ third_party/
 
 # Editor and agent tooling, not part of the product.
 .serena/
+
+# Editor swap files and stray build artifacts.
+*.swp
+*.swo
+/appcast
