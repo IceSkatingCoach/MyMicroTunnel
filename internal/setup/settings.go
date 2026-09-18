@@ -81,6 +81,7 @@ type Settings struct {
 	RouteTableIDs    []string `json:"routeTableIds"`
 
 	AlarmEmail        string `json:"alarmEmail"`
+	AlarmWebhook      string `json:"alarmWebhook"`
 	AlarmOnTunnelDown bool   `json:"alarmOnTunnelDown"`
 
 	InterfaceName  string `json:"interfaceName"`
@@ -249,6 +250,11 @@ func (s Settings) Validate() error {
 
 	if s.AlarmEmail != "" && !emailPattern.MatchString(s.AlarmEmail) {
 		problems = append(problems, fmt.Sprintf("%q is not an email address", s.AlarmEmail))
+	}
+	// SNS refuses a plain-HTTP subscription, and finding that out is a rolled
+	// back deploy rather than a message.
+	if s.AlarmWebhook != "" && !strings.HasPrefix(s.AlarmWebhook, "https://") {
+		problems = append(problems, "the alarm webhook must be an https:// URL")
 	}
 
 	if len(problems) == 0 {

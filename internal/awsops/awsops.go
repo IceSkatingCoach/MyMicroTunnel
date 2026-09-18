@@ -137,6 +137,75 @@ func Profiles() []string {
 	return names
 }
 
+// IsSSOProfile reports whether a profile authenticates through IAM Identity
+// Center rather than a stored key pair.
+//
+// The SDK handles both without being told which is which. The difference
+// matters only for what to say when it fails: a static key that stops working
+// has been deleted or disabled, while an SSO session simply expires — routinely,
+// every few hours — and the fix is one command rather than a new credential.
+func IsSSOProfile(profile string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	content, err := os.ReadFile(filepath.Join(home, ".aws", "config"))
+	if err != nil {
+		return false
+	}
+
+	inProfile := false
+	for _, line := range strings.Split(string(content), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			name := strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]")
+			inProfile = strings.TrimPrefix(name, "profile ") == profile
+			continue
+		}
+		if !inProfile {
+			continue
+		}
+		// Either spelling: the legacy sso_ keys or a reference to an
+		// [sso-session] block.
+		if strings.HasPrefix(trimmed, "sso_") || strings.HasPrefix(trimmed, "sso-session") {
+			return true
+		}
+	}
+	return false
+}
+
+// ExplainCredentialFailure turns an SDK error into something actionable.
+//
+// "operation error STS: GetCallerIdentity, get identity: get credentials" tells
+// somebody who already knows the answer what they already knew. The two cases
+// worth distinguishing are an expired SSO session, which is normal and fixed in
+// one command, and a key that no longer works, which is not.
+func ExplainCredentialFailure(profile string, err error) string {
+	message := err.Error()
+
+	expired := strings.Contains(message, "expired") ||
+		strings.Contains(message, "InvalidGrantException") ||
+		strings.Contains(message, "the SSO session has expired") ||
+		strings.Contains(message, "ForbiddenException")
+
+	if IsSSOProfile(profile) {
+		if expired {
+			return fmt.Sprintf("the IAM Identity Center session for %q has expired.\n\n"+
+				"  Sign in again and re-run this:\n\n"+
+				"      aws sso login --profile %s", profile, profile)
+		}
+		return fmt.Sprintf("%q is an IAM Identity Center profile and it did not work: %v\n\n"+
+			"  Try `aws sso login --profile %s` first.", profile, err, profile)
+	}
+
+	if expired {
+		return fmt.Sprintf("the credentials for %q have expired: %v", profile, err)
+	}
+	return fmt.Sprintf("the credentials for %q do not work: %v\n\n"+
+		"  Check the key is still active in IAM, and that it belongs to the account\n"+
+		"  holding the hosted zone for this hostname.", profile, err)
+}
+
 // WriteProfile adds or replaces one profile in ~/.aws/credentials, leaving
 // every other section untouched.
 func WriteProfile(profile, accessKeyID, secretAccessKey, region string) error {

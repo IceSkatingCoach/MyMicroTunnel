@@ -322,6 +322,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setup.isEnabled = !isBusy
         menu.addItem(setup)
 
+        let uninstall = NSMenuItem(title: "Uninstall…", action: #selector(uninstall), keyEquivalent: "")
+        uninstall.target = self
+        uninstall.isEnabled = !isBusy
+        menu.addItem(uninstall)
+
         if let updater {
             let check = NSMenuItem(
                 title: "Check for Updates…",
@@ -426,6 +431,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         setupController?.showWindow(nil)
         setupController?.window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Removes this machine from the deployment.
+    ///
+    /// Local only, and the dialog says so plainly. Taking down the AWS side
+    /// needs credentials this app does not hold and should not: it would mean
+    /// carrying a key capable of deleting a load balancer, in a menu bar item,
+    /// for the one day somebody clicks it. The stack is removed from a terminal,
+    /// deliberately, with the command spelled out below.
+    @objc private func uninstall() {
+        let alert = NSAlert()
+        alert.messageText = "Remove Xprem VPN from this Mac?"
+        alert.informativeText = """
+            This drops the tunnel and removes the app, the background service,             the sudoers rule and the configuration.
+
+            It leaves your private key at /etc/wireguard, and it leaves the AWS             stack running — the hostname will keep answering from any other Mac             registered to it, and will keep costing money.
+
+            To remove the AWS side too, run this in a terminal instead:
+                wiregard-mini-vpn uninstall --delete-stack --delete-keys
+            """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        // Started detached and then this app exits, because the uninstall
+        // removes /Applications/XpremVpn.app — which is to say, the bundle this
+        // code is running out of.
+        let command = "\(shellQuote(tunnel.helperPath)) uninstall --non-interactive"
+        let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        do {
+            try process.run()
+        } catch {
+            report(title: "Could not start the uninstall", message: error.localizedDescription)
+            return
+        }
+
+        // Waited for, so the authorisation dialog is answered before the app
+        // that raised it disappears.
+        process.waitUntilExit()
+
+        if process.terminationStatus != 0 {
+            report(title: "Uninstall did not finish",
+                   message: "Nothing was removed, or only part of it was. Run "
+                          + "`wiregard-mini-vpn uninstall` in a terminal to see why.")
+            return
+        }
+        NSApp.terminate(nil)
     }
 
     @objc private func quit() {

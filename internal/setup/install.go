@@ -202,6 +202,7 @@ func StackParameters(s Settings) map[string]string {
 		"ServicePort":       s.ServicePort,
 		"HealthCheckPath":   s.HealthCheckPath,
 		"AlarmEmail":        s.AlarmEmail,
+		"AlarmWebhook":      s.AlarmWebhook,
 		"AlarmOnTunnelDown": fmt.Sprintf("%t", s.AlarmOnTunnelDown),
 	}
 }

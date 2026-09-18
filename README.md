@@ -376,6 +376,24 @@ both, invalidates the cache, and then reads the feed back over its public URL �
 because everything before that proves what was uploaded, and only that proves
 what will be served.
 
+Release notes come from `CHANGELOG.md` — the section matching `VERSION` — and
+are shown in Sparkle's update dialog. A release with no section ships an update
+that says nothing about itself, and `make appcast` warns when that is about to
+happen.
+
+## Rolling a release back
+
+```sh
+make rollback ROLLBACK_TO=1.0.2 APPCAST_BASE_URL=https://<hostname>/releases
+```
+
+Fetches that version's archive from the URL the feed advertises — proving it is
+still served — signs it, and republishes the feed pointing at it.
+
+Sparkle does not downgrade, so anyone already on the bad version stays there.
+Rolling back stops it reaching anybody else; getting those users off it needs a
+higher version number, not a lower one.
+
 Two things worth knowing:
 
 - **`CFBundleVersion` is the release number, not the commit.** Sparkle compares

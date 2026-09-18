@@ -156,6 +156,15 @@ Parameters:
       no alarms are created: a stack with nobody to tell should not pay for the
       machinery of telling them.
 
+  AlarmWebhook:
+    Type: String
+    Default: ''
+    Description: >-
+      HTTPS endpoint to POST alarms to, as well as or instead of the email —
+      a Slack incoming webhook, a PagerDuty events URL, anything that accepts
+      SNS notifications. Email is fine for one deployment and unreadable across
+      twenty.
+
   AlarmOnTunnelDown:
     Type: String
     Default: 'false'
@@ -167,8 +176,11 @@ Parameters:
 
 Conditions:
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
+  HasAlarmWebhook: !Not [!Equals [!Ref AlarmWebhook, '']]
+  # Either destination is reason enough to build the topic and the alarms.
+  Alarms: !Or [!Condition HasAlarmEmail, !Condition HasAlarmWebhook]
   AlarmsTunnel: !And
-    - !Condition HasAlarmEmail
+    - !Condition Alarms
     - !Equals [!Ref AlarmOnTunnelDown, 'true']
 
 Resources:
@@ -581,17 +593,33 @@ Resources:
   # --- Telling somebody ----------------------------------------------------
   AlarmTopic:
     Type: AWS::SNS::Topic
-    Condition: HasAlarmEmail
+    Condition: Alarms
     Properties:
       DisplayName: !Sub '${AWS::StackName} gateway'
-      Subscription:
-        - Endpoint: !Ref AlarmEmail
-          Protocol: email
+
+  # Separate resources rather than an inline Subscription list, because that
+  # list cannot be built conditionally: a template with one of the two set would
+  # otherwise carry an empty endpoint and fail to deploy.
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmEmail
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Endpoint: !Ref AlarmEmail
+      Protocol: email
+
+  WebhookSubscription:
+    Type: AWS::SNS::Subscription
+    Condition: HasAlarmWebhook
+    Properties:
+      TopicArn: !Ref AlarmTopic
+      Endpoint: !Ref AlarmWebhook
+      Protocol: https
 
   # The gateway is the one part that should never be down on purpose.
   GatewayDownAlarm:
     Type: AWS::CloudWatch::Alarm
-    Condition: HasAlarmEmail
+    Condition: Alarms
     Properties:
       AlarmName: !Sub '${AWS::StackName}-gateway-down'
       AlarmDescription: >-
@@ -668,5 +696,5 @@ Outputs:
     Value: !GetAtt LoadBalancer.DNSName
 
   AlarmTopicArn:
-    Condition: HasAlarmEmail
+    Condition: Alarms
     Value: !Ref AlarmTopic

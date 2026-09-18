@@ -102,6 +102,7 @@ Flags for install:
   --gateway-ip ADDRESS   tunnel address of the gateway
   --peer-label NAME      how this machine appears in the peer list
   --alarm-email ADDRESS  notify this address when the gateway is down
+  --alarm-webhook URL    POST alarms to an https endpoint (Slack, PagerDuty)
   --alarm-on-tunnel-down also notify when no workstation is connected
   --supervise            keep the tunnel at its last state across reboots
   --client-public-key KEY  reuse a known key instead of reading or generating one
@@ -133,6 +134,7 @@ func runInstall(args []string) {
 	gatewayAddress := flags.String("gateway-ip", defaults.GatewayAddress, "tunnel address of the gateway")
 	peerLabel := flags.String("peer-label", defaults.PeerLabel, "name for this machine in the peer list")
 	alarmEmail := flags.String("alarm-email", "", "address notified when the gateway is down")
+	alarmWebhook := flags.String("alarm-webhook", "", "https endpoint notified when the gateway is down")
 	alarmOnTunnelDown := flags.Bool("alarm-on-tunnel-down", false, "also alarm when no workstation is connected")
 	supervise := flags.Bool("supervise", false, "keep the tunnel at its last state across reboots")
 	clientPublicKeyFlag := flags.String("client-public-key", "", "reuse a known WireGuard public key instead of reading or generating one")
@@ -165,6 +167,7 @@ func runInstall(args []string) {
 	applyString(typed, "gateway-ip", gatewayAddress, &settings.GatewayAddress)
 	applyString(typed, "peer-label", peerLabel, &settings.PeerLabel)
 	applyString(typed, "alarm-email", alarmEmail, &settings.AlarmEmail)
+	applyString(typed, "alarm-webhook", alarmWebhook, &settings.AlarmWebhook)
 	applyString(typed, "profile", profile, &settings.Profile)
 	if typed["alarm-on-tunnel-down"] {
 		settings.AlarmOnTunnelDown = *alarmOnTunnelDown
@@ -381,7 +384,10 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 
 	identity, err := client.Identity(ctx)
 	if err != nil {
-		ui.Fail("Those credentials do not work: %v", err)
+		ui.Fail("%s", awsops.ExplainCredentialFailure(settings.Profile, err))
+	}
+	if awsops.IsSSOProfile(settings.Profile) {
+		ui.Info("%s signs in through IAM Identity Center; its session will expire.", settings.Profile)
 	}
 	ui.Done("Authenticated as %s", identity)
 

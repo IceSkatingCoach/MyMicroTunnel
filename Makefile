@@ -66,6 +66,16 @@ appcast:
 appcast-validate:
 	go run ./cmd/appcast --validate
 
+# Points the feed back at a version that is already published, fetching that
+# archive from the URL the feed advertises so the rollback is signed over the
+# bytes users will actually download.
+#
+#   make rollback ROLLBACK_TO=1.0.2 APPCAST_BASE_URL=https://.../releases
+rollback:
+	@test -n "$(ROLLBACK_TO)" || (echo "Usage: make rollback ROLLBACK_TO=<version> APPCAST_BASE_URL=<url>" && false)
+	go run ./cmd/appcast --rollback $(ROLLBACK_TO) --base-url $(APPCAST_BASE_URL)
+	go run ./cmd/publish --force
+
 # Deploys the feed's own infrastructure — the vendor's bucket and distribution,
 # not a customer's stack. Run once; it prints the two URLs a release needs.
 #
@@ -129,4 +139,4 @@ clean:
 	$(MAKE) -C menubar clean
 	rm -rf build
 
-.PHONY: install uninstall wireguard sparkle sparkle-keys appcast appcast-validate feed-setup publish release engine app pkg pkg-notarized test check lint-template clean
+.PHONY: install uninstall wireguard sparkle sparkle-keys appcast appcast-validate rollback feed-setup publish release engine app pkg pkg-notarized test check lint-template clean

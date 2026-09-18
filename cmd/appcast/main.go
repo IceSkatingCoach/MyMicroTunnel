@@ -39,9 +39,12 @@ import (
 	"encoding/xml"
 	"flag"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -79,8 +82,9 @@ func main() {
 		"where the update archives are published, without a trailing slash")
 	feedURL := flag.String("feed-url", os.Getenv("APPCAST_FEED_URL"),
 		"the appcast's own URL; defaults to <base-url>/appcast.xml")
-	notes := flag.String("notes", "", "release notes, as a file of HTML or Markdown")
+	notes := flag.String("notes", "", "release notes file; CHANGELOG.md's section for this version when empty")
 	validateOnly := flag.Bool("validate", false, "check the existing feed and change nothing")
+	rollback := flag.String("rollback", "", "point the feed back at an already-published version")
 	keyFile := flag.String("key-file", os.Getenv("SPARKLE_PRIVATE_KEY_FILE"),
 		"EdDSA private key exported with `generate_keys -x`; the login Keychain is used when empty")
 	flag.Parse()
@@ -89,6 +93,9 @@ func main() {
 
 	root := repoRoot()
 	version := readVersion(root)
+	if *rollback != "" {
+		version = *rollback
+	}
 	buildDir := filepath.Join(root, "build")
 	packagePath := filepath.Join(buildDir, fmt.Sprintf("XpremVpn-%s.pkg", version))
 	archivePath := filepath.Join(buildDir, fmt.Sprintf("XpremVpn-%s.zip", version))
@@ -116,7 +123,14 @@ func main() {
 		*feedURL = feedURLFromBundle(root)
 	}
 
-	if !exists(packagePath) {
+	if *rollback != "" {
+		// A rollback republishes a version that is already out there, so there
+		// is nothing to build: the archive is fetched from the URL the feed
+		// will advertise, which also proves that URL still serves it.
+		warn("Rolling the feed back to %s. Anyone on a newer version stays there —", version)
+		warn("Sparkle does not downgrade. This stops the newer one reaching anybody else.")
+		fetchPublished(trimmed, version, archivePath)
+	} else if !exists(packagePath) {
 		fail("No package at %s. Run `make pkg-notarized PROFILE=<profile>` first.\n\n"+
 			"  An unnotarized package can be signed into a feed perfectly well and will\n"+
 			"  then be refused by Gatekeeper on every machine that downloads it.",
@@ -131,15 +145,12 @@ func main() {
 	// build/XpremVpn-1.0.1.pkg. The package is staged alone in a directory and
 	// that directory's contents are archived instead, which puts it where it
 	// belongs.
-	step("Packing %s", filepath.Base(packagePath))
-	must(os.RemoveAll(archivePath))
-
-	staging, err := os.MkdirTemp("", "release-")
-	must(err)
-	defer os.RemoveAll(staging)
-	runIn(buildDir, "cp", packagePath, filepath.Join(staging, filepath.Base(packagePath)))
-	runIn(buildDir, "ditto", "-c", "-k", staging, archivePath)
-	done("%s", filepath.Base(archivePath))
+	if *rollback == "" {
+		step("Packing %s", filepath.Base(packagePath))
+		must(os.RemoveAll(archivePath))
+		stageAndPack(buildDir, packagePath, archivePath)
+		done("%s", filepath.Base(archivePath))
+	}
 
 	step("Signing the archive")
 	signature, length := signUpdate(root, archivePath)
@@ -152,7 +163,7 @@ func main() {
 		Length:       length,
 		EdSignature:  signature,
 		Published:    time.Now(),
-		ReleaseNotes: readNotes(*notes),
+		ReleaseNotes: releaseNotes(root, version, *notes),
 	})
 	must(os.WriteFile(feedPath, []byte(feed), 0o644))
 	done("%s", feedPath)
@@ -205,6 +216,51 @@ func feedURLFromBundle(root string) string {
 		return ""
 	}
 	return strings.TrimSpace(rest[:end])
+}
+
+// stageAndPack puts the package alone in a directory and archives that
+// directory's contents, so the package lands at the archive's root where
+// Sparkle looks for it.
+func stageAndPack(buildDir, packagePath, archivePath string) {
+	staging, err := os.MkdirTemp("", "release-")
+	must(err)
+	defer os.RemoveAll(staging)
+
+	runIn(buildDir, "cp", packagePath, filepath.Join(staging, filepath.Base(packagePath)))
+	runIn(buildDir, "ditto", "-c", "-k", staging, archivePath)
+}
+
+// fetchPublished downloads a release that is already on the feed's own CDN.
+//
+// Rolling back means re-advertising something that was published before, and the
+// only copy that matters is the one users will actually download. Fetching it
+// from there rather than rebuilding locally means the rollback is signed over
+// the exact bytes being served — and fails loudly if those bytes have gone.
+func fetchPublished(baseURL, version, archivePath string) {
+	url := baseURL + "/XpremVpn-" + version + ".zip"
+	step("Fetching the published %s", version)
+
+	client := &http.Client{Timeout: 10 * time.Minute}
+	response, err := client.Get(url)
+	if err != nil {
+		fail("Could not reach %s: %v", url, err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusOK {
+		fail("%s returned %s.\n\n"+
+			"  Rolling back to %s means that archive is still published. It is not.\n"+
+			"  Check what the bucket actually holds before pointing the feed at it.",
+			url, response.Status, version)
+	}
+
+	file, err := os.Create(archivePath)
+	must(err)
+	defer file.Close()
+
+	written, err := io.Copy(file, response.Body)
+	must(err)
+	done("%s, %d bytes, from the URL the feed will advertise", filepath.Base(archivePath), written)
 }
 
 // --- the feed --------------------------------------------------------------
@@ -466,13 +522,110 @@ func readVersion(root string) string {
 	return strings.TrimSpace(string(content))
 }
 
-func readNotes(path string) string {
-	if path == "" {
+// releaseNotes is what the user reads in the update dialog before deciding
+// whether to install. Taken from CHANGELOG.md by default, because notes kept
+// anywhere else are notes that get forgotten on the release where they matter.
+func releaseNotes(root, version, override string) string {
+	if override != "" {
+		content, err := os.ReadFile(override)
+		must(err)
+		return markdownToHTML(strings.TrimSpace(string(content)))
+	}
+
+	content, err := os.ReadFile(filepath.Join(root, "CHANGELOG.md"))
+	if err != nil {
+		warn("No CHANGELOG.md, so this release ships without notes.")
 		return ""
 	}
-	content, err := os.ReadFile(path)
-	must(err)
-	return strings.TrimSpace(string(content))
+
+	section := changelogSection(string(content), version)
+	if section == "" {
+		// Not fatal, but worth saying out loud: shipping an update that says
+		// nothing about itself is a worse default than stopping to ask.
+		warn("CHANGELOG.md has no section for %s, so this release ships without notes.", version)
+		warn("Add a '## %s' heading to describe what changed.", version)
+		return ""
+	}
+	done("release notes from CHANGELOG.md")
+	return markdownToHTML(section)
+}
+
+// changelogSection returns the body under "## <version>", stopping at the next
+// heading of the same level.
+func changelogSection(changelog, version string) string {
+	lines := strings.Split(changelog, "\n")
+	heading := "## " + version
+
+	start := -1
+	for index, line := range lines {
+		if strings.TrimSpace(line) == heading {
+			start = index + 1
+			break
+		}
+	}
+	if start < 0 {
+		return ""
+	}
+
+	var body []string
+	for _, line := range lines[start:] {
+		if strings.HasPrefix(line, "## ") {
+			break
+		}
+		body = append(body, line)
+	}
+	return strings.TrimSpace(strings.Join(body, "\n"))
+}
+
+// markdownToHTML handles the little that release notes use: bullets, inline
+// code, and bold. Sparkle renders the description as HTML, and a full Markdown
+// dependency for three constructs is a dependency in the release path.
+func markdownToHTML(text string) string {
+	var out []string
+	inList := false
+
+	flush := func() {
+		if inList {
+			out = append(out, "</ul>")
+			inList = false
+		}
+	}
+
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case trimmed == "":
+			flush()
+		case strings.HasPrefix(trimmed, "- "):
+			if !inList {
+				out = append(out, "<ul>")
+				inList = true
+			}
+			out = append(out, "<li>"+inlineMarkdown(trimmed[2:])+"</li>")
+		default:
+			// A continuation of the bullet above, which is how the wrapped
+			// lines in CHANGELOG.md read.
+			if inList && len(out) > 0 && strings.HasSuffix(out[len(out)-1], "</li>") {
+				previous := strings.TrimSuffix(out[len(out)-1], "</li>")
+				out[len(out)-1] = previous + " " + inlineMarkdown(trimmed) + "</li>"
+				continue
+			}
+			out = append(out, "<p>"+inlineMarkdown(trimmed)+"</p>")
+		}
+	}
+	flush()
+	return strings.Join(out, "\n")
+}
+
+var (
+	inlineCode = regexp.MustCompile("`([^`]+)`")
+	inlineBold = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+)
+
+func inlineMarkdown(text string) string {
+	escaped := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(text)
+	escaped = inlineCode.ReplaceAllString(escaped, "<code>$1</code>")
+	return inlineBold.ReplaceAllString(escaped, "<strong>$1</strong>")
 }
 
 func sha256Of(path string) string {
