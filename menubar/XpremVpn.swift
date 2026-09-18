@@ -180,7 +180,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // 3s is frequent enough that the icon tracks a tunnel brought up or
         // down from a terminal, and cheap enough to ignore: one ifconfig call.
         pollTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refreshState() }
+            // Bound to a constant before the Task rather than used as `self?.`
+            // inside it. A weak capture is a mutable binding, and referring to
+            // it from a concurrently-executing closure is an error under strict
+            // concurrency checking — which the Swift on CI applies and the one
+            // on a developer's Mac may not.
+            guard let self else { return }
+            Task { @MainActor in self.refreshState() }
         }
 
         // No config file means nothing has been deployed yet, so the first run
