@@ -383,8 +383,17 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 // InstallApp is a no-op when the package already placed the app; it only builds
 // when running from a source checkout.
 func InstallApp(repoRoot string) {
-	menubarDir := filepath.Join(repoRoot, "menubar")
-	if !sys.Exists(menubarDir) {
+	// An empty root means this is the installed copy rather than one running
+	// from a checkout. Joining "" with "menubar" produces a *relative* path,
+	// which resolves against whatever directory the command happened to be run
+	// from — so running /usr/local/bin/wiregard-mini-vpn while sitting in a
+	// checkout made it try to rebuild the app and copy it over the signed
+	// bundle the package had just installed.
+	menubarDir := ""
+	if repoRoot != "" {
+		menubarDir = filepath.Join(repoRoot, "menubar")
+	}
+	if menubarDir == "" || !sys.Exists(menubarDir) {
 		ui.Step("Menu bar app")
 		if sys.Exists(InstalledAppPath) {
 			ui.Done("Already installed at %s", InstalledAppPath)

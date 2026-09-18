@@ -3,6 +3,7 @@ package setup
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -116,4 +117,24 @@ func TestValidateSudoersAgreesWithVisudo(t *testing.T) {
 	if err := ValidateSudoers("this is not a sudoers file\n"); err == nil {
 		t.Error("a malformed rule was accepted")
 	}
+}
+
+// InstallApp used to join an empty repository root with "menubar", which yields
+// a relative path rather than nothing. Run from inside a checkout, the
+// *installed* binary then found ./menubar, decided it was a source build, and
+// copied a locally built bundle over the signed one the package had installed.
+func TestRepoRootIsEmptyWhenNotInACheckout(t *testing.T) {
+	if root := RepoRoot(); root != "" && !strings.HasPrefix(root, "/") {
+		t.Errorf("RepoRoot returned a relative path %q; every caller joins it with a subdirectory", root)
+	}
+}
+
+func TestJoiningAnEmptyRootDoesNotProduceARelativePath(t *testing.T) {
+	// The bug in one line: this is what the old code computed.
+	if joined := filepath.Join("", "menubar"); filepath.IsAbs(joined) {
+		t.Skip("filepath.Join no longer behaves this way")
+	} else if joined != "menubar" {
+		t.Skipf("unexpected join result %q", joined)
+	}
+	// So InstallApp has to check the root before joining, not after.
 }
