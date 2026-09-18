@@ -1,0 +1,145 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+name: Integration
+
+# The part CI has never touched: actually deploying the stack.
+#
+# Everything in ci.yml verifies the code around the deployment — that it
+# compiles, that its parameters match the template's, that the template lints.
+# None of that catches a resource whose properties AWS rejects, a UserData
+# script that dies at boot, or a gateway that comes up and never publishes its
+# key. Those only surface against real AWS, which is where several bugs have
+# already been found by hand.
+#
+# It runs nightly rather than per-push because it costs real money and takes
+# twenty minutes, and it destroys what it built even when the test fails —
+# a leaked NLB is USD 16/month of silence.
+
+on:
+  schedule:
+    # 04:00 UTC, when a stuck stack has hours to be noticed before anyone needs
+    # the account.
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: 'Leave the stack standing for inspection (it still costs money)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  # For the OIDC token below. No long-lived AWS key is stored in this
+  # repository; the role is assumed for the length of the run.
+  id-token: write
+
+concurrency:
+  # One at a time. Two runs would fight over the same stack name.
+  group: integration
+  cancel-in-progress: false
+
+env:
+  STACK: xprem-ci-${{ github.run_id }}
+  AWS_REGION: us-east-2
+
+jobs:
+  deploy-and-destroy:
+    name: Deploy into a throwaway account
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check whether this is configured
+        id: configured
+        # A fork, or a repository whose owner has not set this up, should skip
+        # cleanly rather than fail every night with a credentials error nobody
+        # can act on.
+        env:
+          ROLE: ${{ secrets.AWS_INTEGRATION_ROLE_ARN }}
+        run: |
+          if [ -z "$ROLE" ]; then
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::AWS_INTEGRATION_ROLE_ARN is not set; skipping."
+            echo "::notice::Set it to a role in a throwaway account that trusts this repository's OIDC provider."
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.configured.outputs.ready == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Assume the throwaway account's role
+        if: steps.configured.outputs.ready == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INTEGRATION_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-duration-seconds: 3600
+
+      - name: Deploy
+        if: steps.configured.outputs.ready == 'true'
+        env:
+          DOMAIN: ${{ secrets.AWS_INTEGRATION_DOMAIN }}
+        run: |
+          go build -o wiregard-mini-vpn ./cmd/wiregard-mini-vpn
+          # --stage deploy is the half that needs only AWS credentials: no root,
+          # no Mac, no tunnel. That is exactly the half CI can exercise.
+          ./wiregard-mini-vpn install \
+            --stage deploy \
+            --non-interactive \
+            --profile default \
+            --region "$AWS_REGION" \
+            --stack "$STACK" \
+            --domain "$DOMAIN" \
+            --port 3000 \
+            --client-public-key "$(openssl rand 32 | base64)" \
+            --settings /tmp/ci-settings.json
+
+      - name: Check what it built
+        if: steps.configured.outputs.ready == 'true'
+        run: |
+          set -euo pipefail
+
+          status=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query 'Stacks[0].StackStatus' --output text)
+          echo "stack status: $status"
+          [ "$status" = "CREATE_COMPLETE" ] || [ "$status" = "UPDATE_COMPLETE" ]
+
+          # The gateway publishing its key is the only proof the boot script ran
+          # all the way through. A stack can reach CREATE_COMPLETE with an
+          # instance that died halfway.
+          key=$(aws ssm get-parameter --name "/$STACK/wireguard/server-public-key" \
+            --query Parameter.Value --output text)
+          echo "gateway published a key of ${#key} characters"
+          [ "${#key}" -eq 44 ]
+
+          group=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query 'Stacks[0].Outputs[?OutputKey==`GatewayGroupName`].OutputValue' --output text)
+          inservice=$(aws autoscaling describe-auto-scaling-groups \
+            --auto-scaling-group-names "$group" \
+            --query 'length(AutoScalingGroups[0].Instances[?LifecycleState==`InService`])' --output text)
+          echo "instances in service: $inservice"
+          [ "$inservice" = "1" ]
+
+      - name: Destroy
+        # Always. A failed test that leaves a load balancer standing costs more
+        # than the failure it found.
+        if: always() && steps.configured.outputs.ready == 'true' && !inputs.keep
+        run: |
+          aws cloudformation delete-stack --stack-name "$STACK" || true
+          aws cloudformation wait stack-delete-complete --stack-name "$STACK" || true
+
+          # The gateway writes these for itself, so CloudFormation does not know
+          # about them and deleting the stack leaves them behind.
+          for suffix in peers server-public-key server-private-key; do
+            aws ssm delete-parameter --name "/$STACK/wireguard/$suffix" 2>/dev/null || true
+          done
+          echo "cleaned up $STACK"
+
+      - name: Say what is still standing
+        if: always() && steps.configured.outputs.ready == 'true' && inputs.keep
+        run: |
+          echo "::warning::$STACK was left standing and is costing money."
+          echo "::warning::Delete it with: aws cloudformation delete-stack --stack-name $STACK"

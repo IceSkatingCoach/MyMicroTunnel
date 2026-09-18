@@ -70,14 +70,29 @@ the default; you can set another during setup.
 The installer deploys into your account, so it needs a key. Give it a dedicated
 one with only the permissions it uses, rather than an administrator key.
 
+**[Create the deploy identity](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fxpremvpn-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=xprem-vpn-deploy-role)** — one click, in whichever
+AWS account you are signed into. It creates an IAM user holding only the
+permissions the installer uses.
+
+Then open the stack's **Outputs** tab and follow `CreateAccessKeyUrl` →
+**Create access key** → **Command Line Interface**. Copy the two values.
+
+The template deliberately does not create the key for you. Stack outputs are
+stored by CloudFormation and readable by anyone who can describe the stack,
+forever; creating it yourself means the secret is shown once and stored nowhere.
+
+<details>
+<summary>Or do it by hand</summary>
+
 1. AWS console → **IAM** → **Policies** → **Create policy**.
 2. Choose the **JSON** tab and paste [`docs/deploy-policy.json`](docs/deploy-policy.json).
 3. Name it `XpremVpnDeploy` and create it.
 4. **Users** → **Create user**, name it `xprem-vpn-deploy`, attach that policy.
 5. Open the user → **Security credentials** → **Create access key** →
-   **Command Line Interface**. Copy the access key ID and the secret.
+   **Command Line Interface**.
 
-You will paste that secret once and not need it again.
+A test keeps that JSON and the template above in step with each other.
+</details>
 
 > Already have the AWS CLI configured with a profile that can deploy? Skip this
 > step — the setup window offers your existing profiles instead.
@@ -310,6 +325,7 @@ root-owned and mode 0600, because it names the key the helper loads.
 | `infra/cloudformation-xprem-onprem-vpn.yaml` | the customer's stack: NLB, TLS, gateway group, alarms |
 | `infra/cloudformation-updates.yaml` | the vendor's stack: S3 and CloudFront for the update feed |
 | `infra/cloudformation-site.yaml` | the vendor's stack: the product website |
+| `infra/cloudformation-deploy-role.yaml` | the customer's one-click IAM identity for installing |
 | `cmd/wiregard-mini-vpn` | installer, uninstaller, tunnel, supervisor |
 | `cmd/build-pkg` | builds, signs and notarizes the `.pkg` |
 | `cmd/fetch-wireguard`, `cmd/fetch-sparkle` | pinned third-party binaries |

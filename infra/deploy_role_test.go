@@ -1,0 +1,160 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package infra
+
+import (
+	"encoding/json"
+	"os"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// The permissions exist in two places: docs/deploy-policy.json, which a person
+// pastes into the console, and cloudformation-deploy-role.yaml, which creates
+// the same policy for them. Two copies of a security boundary drift, and the
+// drift is silent — an install that works for whoever used the template and
+// fails for whoever pasted the JSON, or worse, the reverse.
+//
+// These tests hold them together.
+
+type policyDocument struct {
+	Statement []struct {
+		Sid      string `json:"Sid"`
+		Effect   string `json:"Effect"`
+		Action   any    `json:"Action"`
+		Resource any    `json:"Resource"`
+	} `json:"Statement"`
+}
+
+func loadPolicyJSON(t *testing.T) policyDocument {
+	t.Helper()
+
+	content, err := os.ReadFile("../docs/deploy-policy.json")
+	if err != nil {
+		t.Fatalf("reading the policy document: %v", err)
+	}
+
+	var document policyDocument
+	if err := json.Unmarshal(content, &document); err != nil {
+		t.Fatalf("docs/deploy-policy.json is not valid JSON: %v", err)
+	}
+	return document
+}
+
+func deployRoleTemplate(t *testing.T) string {
+	t.Helper()
+
+	content, err := os.ReadFile("cloudformation-deploy-role.yaml")
+	if err != nil {
+		t.Fatalf("reading the deploy-role template: %v", err)
+	}
+	return string(content)
+}
+
+// withoutComments strips the prose. The template explains at length why it does
+// *not* create an access key, and a check for that string against the whole
+// file matches the explanation rather than a resource — a test that fails on
+// the presence of the reason it passes.
+func withoutComments(template string) string {
+	var kept []string
+	for _, line := range strings.Split(template, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+func TestDeployPolicyJSONIsValid(t *testing.T) {
+	document := loadPolicyJSON(t)
+	if len(document.Statement) == 0 {
+		t.Fatal("the policy has no statements")
+	}
+	for index, statement := range document.Statement {
+		if statement.Sid == "" {
+			t.Errorf("statement %d has no Sid; the template matches on them", index)
+		}
+		if statement.Effect != "Allow" {
+			t.Errorf("%s has effect %q; an installer policy should only allow",
+				statement.Sid, statement.Effect)
+		}
+	}
+}
+
+// Every statement in the pasteable policy has to exist in the template, and the
+// other way round. A permission in one and not the other is an install that
+// works for half the people who follow the instructions.
+func TestDeployRoleTemplateMatchesThePolicyDocument(t *testing.T) {
+	document := loadPolicyJSON(t)
+	template := deployRoleTemplate(t)
+
+	var fromJSON []string
+	for _, statement := range document.Statement {
+		fromJSON = append(fromJSON, statement.Sid)
+		if !strings.Contains(template, "Sid: "+statement.Sid) {
+			t.Errorf("%s is in docs/deploy-policy.json but not in the template", statement.Sid)
+		}
+	}
+
+	var fromTemplate []string
+	for _, line := range strings.Split(template, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if after, found := strings.CutPrefix(trimmed, "- Sid: "); found {
+			fromTemplate = append(fromTemplate, after)
+		}
+	}
+
+	sort.Strings(fromJSON)
+	sort.Strings(fromTemplate)
+	if len(fromJSON) != len(fromTemplate) {
+		t.Errorf("the policy has %d statements and the template %d:\n  json:     %v\n  template: %v",
+			len(fromJSON), len(fromTemplate), fromJSON, fromTemplate)
+	}
+}
+
+func TestDeployRoleTemplateGrantsEveryActionTheInstallerUses(t *testing.T) {
+	template := deployRoleTemplate(t)
+
+	// Not an exhaustive list — the one above covers that. These are the calls
+	// whose absence produces a failure late in a deploy, after the customer has
+	// already waited several minutes.
+	for _, action := range []string{
+		"cloudformation:CreateChangeSet",
+		"cloudformation:GetTemplateSummary",
+		"ec2:DescribeVpcs",
+		"ec2:DescribeRouteTables",
+		"route53:ListHostedZones",
+		"route53:ChangeResourceRecordSets",
+		"ssm:PutParameter",
+		"elasticloadbalancing:RegisterTargets",
+		"iam:PassRole",
+		"autoscaling:CreateAutoScalingGroup",
+	} {
+		if !strings.Contains(template, action) {
+			t.Errorf("the template does not grant %s", action)
+		}
+	}
+}
+
+// The template could create an access key and put the secret in an output.
+// Stack outputs are stored by CloudFormation and readable by anyone who can
+// describe the stack, for as long as it exists.
+func TestDeployRoleTemplateDoesNotHandOutASecret(t *testing.T) {
+	template := withoutComments(deployRoleTemplate(t))
+
+	if strings.Contains(template, "AWS::IAM::AccessKey") {
+		t.Error("the template creates an access key; its secret would live in the stack outputs")
+	}
+	if strings.Contains(template, "SecretAccessKey") {
+		t.Error("the template references a secret access key")
+	}
+}
+
+func TestDeployRoleTemplateOnlyAllows(t *testing.T) {
+	// A Deny here would be a permission boundary, which is a different tool for
+	// a different job, and easy to add by accident while copying statements.
+	if strings.Contains(withoutComments(deployRoleTemplate(t)), "Effect: Deny") {
+		t.Error("the deploy policy contains a Deny; it should only grant")
+	}
+}

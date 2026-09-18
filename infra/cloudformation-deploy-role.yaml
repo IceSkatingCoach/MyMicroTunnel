@@ -1,0 +1,234 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Creates the least-privilege identity that installs Xprem VPN. Deploy this
+  once, in your own account, then create an access key for the user it makes.
+
+# WHY THIS EXISTS
+# ---------------
+# The first step of installing used to be "open IAM, create a policy, paste
+# this JSON". That is a reasonable ask of an engineer and a wall for everyone
+# else — and the people most likely to get it wrong are the ones who would
+# shrug and attach AdministratorAccess instead, which is the outcome this is
+# trying to avoid.
+#
+# WHY IT DOES NOT HAND YOU A SECRET
+# ---------------------------------
+# It could create an AWS::IAM::AccessKey and put the secret in an output. It
+# deliberately does not: stack outputs are stored by CloudFormation and readable
+# by anyone who can describe the stack, forever. Creating the key yourself means
+# the secret is shown once, to you, and stored nowhere. The link is in the
+# outputs below.
+#
+# The permissions are the same set as docs/deploy-policy.json, and a test keeps
+# the two from drifting apart.
+
+Parameters:
+  UserName:
+    Type: String
+    Default: xprem-vpn-deploy
+    Description: Name for the IAM user the installer will authenticate as
+    AllowedPattern: '^[\w+=,.@-]+$'
+
+Resources:
+  DeployPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${UserName}-policy'
+      Description: Least-privilege permissions for the Xprem VPN installer
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: WhoAmI
+            Effect: Allow
+            Action: sts:GetCallerIdentity
+            Resource: "*"
+          - Sid: DiscoverTheAccountsNetwork
+            Effect: Allow
+            Action:
+              - ec2:DescribeVpcs
+              - ec2:DescribeSubnets
+              - ec2:DescribeRouteTables
+              - ec2:DescribeAvailabilityZones
+              - ec2:DescribeSecurityGroups
+              - ec2:DescribeAddresses
+              - ec2:DescribeInstances
+              - ec2:DescribeImages
+              - ec2:DescribeLaunchTemplates
+              - ec2:DescribeLaunchTemplateVersions
+              - ec2:DescribeTags
+            Resource: "*"
+          - Sid: DeployTheStack
+            Effect: Allow
+            Action:
+              - cloudformation:CreateChangeSet
+              - cloudformation:DescribeChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - cloudformation:DescribeStacks
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStackResource
+              - cloudformation:DescribeStackResources
+              - cloudformation:GetTemplateSummary
+              - cloudformation:DeleteStack
+            Resource: "*"
+          - Sid: TheResourcesTheStackCreates
+            Effect: Allow
+            Action:
+              - ec2:CreateSecurityGroup
+              - ec2:DeleteSecurityGroup
+              - ec2:AuthorizeSecurityGroupIngress
+              - ec2:RevokeSecurityGroupIngress
+              - ec2:CreateTags
+              - ec2:DeleteTags
+              - ec2:AllocateAddress
+              - ec2:ReleaseAddress
+              - ec2:CreateLaunchTemplate
+              - ec2:CreateLaunchTemplateVersion
+              - ec2:DeleteLaunchTemplate
+              - ec2:ModifyLaunchTemplate
+              - ec2:RunInstances
+              - ec2:TerminateInstances
+            Resource: "*"
+          - Sid: TheGatewayGroup
+            Effect: Allow
+            Action:
+              - autoscaling:CreateAutoScalingGroup
+              - autoscaling:UpdateAutoScalingGroup
+              - autoscaling:DeleteAutoScalingGroup
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeScalingActivities
+              - autoscaling:EnableMetricsCollection
+              - autoscaling:DisableMetricsCollection
+              - autoscaling:CreateOrUpdateTags
+              - autoscaling:DeleteTags
+            Resource: "*"
+          - Sid: TheGatewaysOwnRole
+            Effect: Allow
+            Action:
+              - iam:CreateRole
+              - iam:DeleteRole
+              - iam:GetRole
+              - iam:PutRolePolicy
+              - iam:DeleteRolePolicy
+              - iam:GetRolePolicy
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+              - iam:CreateInstanceProfile
+              - iam:DeleteInstanceProfile
+              - iam:GetInstanceProfile
+              - iam:AddRoleToInstanceProfile
+              - iam:RemoveRoleFromInstanceProfile
+              - iam:TagRole
+              - iam:UntagRole
+            Resource:
+              - "arn:aws:iam::*:role/*-GatewayRole-*"
+              - "arn:aws:iam::*:instance-profile/*-GatewayInstanceProfile-*"
+          - Sid: HandTheRoleToTheInstance
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: "arn:aws:iam::*:role/*-GatewayRole-*"
+            Condition:
+              StringEquals:
+                "iam:PassedToService": "ec2.amazonaws.com"
+          - Sid: TheLoadBalancer
+            Effect: Allow
+            Action:
+              - elasticloadbalancing:CreateLoadBalancer
+              - elasticloadbalancing:DeleteLoadBalancer
+              - elasticloadbalancing:ModifyLoadBalancerAttributes
+              - elasticloadbalancing:CreateTargetGroup
+              - elasticloadbalancing:DeleteTargetGroup
+              - elasticloadbalancing:ModifyTargetGroupAttributes
+              - elasticloadbalancing:CreateListener
+              - elasticloadbalancing:DeleteListener
+              - elasticloadbalancing:ModifyListener
+              - elasticloadbalancing:AddTags
+              - elasticloadbalancing:RemoveTags
+              - elasticloadbalancing:Describe*
+              - elasticloadbalancing:RegisterTargets
+              - elasticloadbalancing:DeregisterTargets
+            Resource: "*"
+          - Sid: TheCertificate
+            Effect: Allow
+            Action:
+              - acm:RequestCertificate
+              - acm:DeleteCertificate
+              - acm:DescribeCertificate
+              - acm:AddTagsToCertificate
+              - acm:ListCertificates
+            Resource: "*"
+          - Sid: TheHostnameAndItsValidationRecords
+            Effect: Allow
+            Action:
+              - route53:ListHostedZones
+              - route53:GetHostedZone
+              - route53:GetChange
+            Resource: "*"
+          - Sid: ChangeRecordsOnlyInTheZoneBeingServed
+            Effect: Allow
+            Action:
+              - route53:ChangeResourceRecordSets
+              - route53:ListResourceRecordSets
+            Resource: "arn:aws:route53:::hostedzone/*"
+          - Sid: ThePeerListAndTheGatewaysKeys
+            Effect: Allow
+            Action:
+              - ssm:PutParameter
+              - ssm:GetParameter
+              - ssm:GetParameters
+              - ssm:GetParametersByPath
+              - ssm:DeleteParameter
+              - ssm:DeleteParameters
+              - ssm:DescribeParameters
+              - ssm:AddTagsToResource
+            Resource: "arn:aws:ssm:*:*:parameter/*"
+          - Sid: TheAmazonLinuxImageAlias
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource: "arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/*"
+          - Sid: TellingSomebodyWhenTheGatewayIsDown
+            Effect: Allow
+            Action:
+              - sns:CreateTopic
+              - sns:DeleteTopic
+              - sns:Subscribe
+              - sns:Unsubscribe
+              - sns:GetTopicAttributes
+              - sns:SetTopicAttributes
+              - sns:ListSubscriptionsByTopic
+              - sns:TagResource
+              - sns:UntagResource
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:TagResource
+              - cloudwatch:UntagResource
+            Resource: "*"
+
+  DeployUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref UserName
+      ManagedPolicyArns:
+        - !Ref DeployPolicy
+      Tags:
+        - Key: Purpose
+          Value: Installs Xprem VPN
+
+Outputs:
+  UserNameOut:
+    Description: The identity the installer authenticates as
+    Value: !Ref DeployUser
+
+  CreateAccessKeyUrl:
+    Description: >-
+      Open this, choose "Create access key", pick "Command Line Interface", and
+      paste the two values into the Xprem VPN setup window. The secret is shown
+      once and stored nowhere.
+    Value: !Sub 'https://console.aws.amazon.com/iam/home#/users/details/${DeployUser}?section=security_credentials'
+
+  PolicyArn:
+    Value: !Ref DeployPolicy

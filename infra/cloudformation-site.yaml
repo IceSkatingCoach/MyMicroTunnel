@@ -40,13 +40,16 @@ Resources:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
-      # Nothing is public. CloudFront reaches the bucket through the origin
-      # access control below, and it is the only thing that can.
       PublicAccessBlockConfiguration:
+        # No object may carry an ACL, and any ACL already present is ignored.
+        # Access is decided by the bucket policy and nowhere else.
         BlockPublicAcls: true
         IgnorePublicAcls: true
-        BlockPublicPolicy: true
-        RestrictPublicBuckets: true
+        # These two are off so that launch/ can be read anonymously. See the
+        # bucket policy: it is one prefix, read-only, and everything else in the
+        # bucket remains reachable only through CloudFront.
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
 
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -64,6 +67,18 @@ Resources:
             Condition:
               StringEquals:
                 AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+          - Sid: CloudFormationMayFetchTheLaunchTemplate
+            # CloudFormation's TemplateURL must be an S3 URL — it will not
+            # follow a CloudFront one — and the console fetches it as an
+            # anonymous caller on the user's behalf. So the one-click install
+            # link requires this object to be readable without credentials.
+            #
+            # Scoped to a single prefix holding public CloudFormation templates,
+            # which are meant to be read by anyone considering running them.
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${BucketName}/launch/*'
           - Sid: NothingUnencryptedInTransit
             Effect: Deny
             Principal: '*'
@@ -173,3 +188,11 @@ Outputs:
   DistributionId:
     Description: Needed to invalidate the cached page after an edit
     Value: !Ref Distribution
+
+  LaunchStackUrl:
+    Description: >-
+      One-click link that creates the installer's IAM identity in whichever
+      account the person following it is signed into.
+    Value: !Sub
+      - 'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2F${BucketName}.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=xprem-vpn-deploy-role'
+      - BucketName: !Ref BucketName

@@ -273,10 +273,15 @@
     <ol class="steps">
       <li>
         <h3>Create AWS credentials for the installer</h3>
-        <p>In IAM, create a policy from the published
-           <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn/blob/main/docs/deploy-policy.json">least-privilege deploy policy</a>,
-           attach it to a new user, and create an access key. A dedicated key, not an
-           administrator one. If you already have a working AWS CLI profile, skip this.</p>
+        <p>One click, in whichever AWS account you are signed into:</p>
+        <p><a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fxpremvpn-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=xprem-vpn-deploy-role">Create the deploy identity</a></p>
+        <p>That builds an IAM user holding only the permissions the installer uses — you can
+           read every one of them in
+           <a href="https://xpremvpn.maragato.ca/deploy-role.yaml">the template</a> before you
+           run it. It deliberately does <em>not</em> hand you a secret: stack outputs are
+           stored by CloudFormation and readable afterwards, so you create the access key
+           yourself from the link in the stack's outputs, and it is shown once.</p>
+        <p>If you already have a working AWS CLI profile that can deploy, skip this entirely.</p>
       </li>
       <li>
         <h3>Check your hosted zone</h3>
