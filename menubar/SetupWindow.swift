@@ -332,7 +332,20 @@ final class SetupWindowController: NSWindowController {
     /// Runs the binary and turns each NDJSON line into a log entry as it
     /// arrives, so a five-minute deploy shows progress rather than a frozen
     /// window.
-    private func stream(_ arguments: [String], completion: @escaping (Bool) -> Void) {
+    ///
+    /// The concurrency here is fussier than it looks. A pipe's readability
+    /// handler runs on an arbitrary queue, and Process calls its termination
+    /// handler on another one; both are `@Sendable` closures. Anything they
+    /// touch has to be safe to touch from there, which rules out the obvious
+    /// spelling — a captured `var` for the partial line, and a plain closure
+    /// for the completion. Swift 5 calls those warnings; Swift 6 calls them
+    /// errors.
+    ///
+    /// `completion` is spelled `@Sendable @MainActor` rather than just
+    /// `@MainActor`. Swift 6 infers that a main-actor-isolated closure is safe
+    /// to hand across domains; Swift 5 with complete checking does not, and
+    /// says so. Writing both keeps every mode quiet about the same code.
+    private func stream(_ arguments: [String], completion: @escaping @Sendable @MainActor (Bool) -> Void) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: SetupEngine.binaryPath)
         process.arguments = arguments
@@ -341,24 +354,30 @@ final class SetupWindowController: NSWindowController {
         process.standardOutput = pipe
         process.standardError = pipe
 
-        var pending = ""
+        let buffer = LineBuffer()
         pipe.fileHandleForReading.readabilityHandler = { handle in
             let chunk = handle.availableData
-            guard !chunk.isEmpty, let text = String(data: chunk, encoding: .utf8) else { return }
-            DispatchQueue.main.async {
-                pending += text
-                while let newline = pending.firstIndex(of: "\n") {
-                    let line = String(pending[pending.startIndex..<newline])
-                    pending = String(pending[pending.index(after: newline)...])
+            if chunk.isEmpty {
+                // EOF. Cleared here, from the handle the handler was given,
+                // rather than from the termination handler — which would mean
+                // carrying the pipe into a second concurrency domain to do it.
+                handle.readabilityHandler = nil
+                return
+            }
+            guard let text = String(data: chunk, encoding: .utf8) else { return }
+            Task { @MainActor in
+                for line in buffer.take(text) {
                     self.appendEvent(line)
                 }
             }
         }
 
         process.terminationHandler = { finished in
-            DispatchQueue.main.async {
-                pipe.fileHandleForReading.readabilityHandler = nil
-                completion(finished.terminationStatus == 0)
+            // Read out here and passed on as a Bool: Process is not Sendable,
+            // so it must not cross into the task below.
+            let succeeded = finished.terminationStatus == 0
+            Task { @MainActor in
+                completion(succeeded)
             }
         }
 
@@ -392,6 +411,30 @@ final class SetupWindowController: NSWindowController {
         }
     }
 
+}
+
+/// Accumulates the partial line left over between reads.
+///
+/// A reference type on the main actor rather than a captured `var`, because the
+/// pipe's handler runs on an arbitrary queue: a captured var mutated from there
+/// is a data race, and one that happens to work until the day a deploy is
+/// chatty enough to split a line across two reads under load.
+@MainActor
+private final class LineBuffer {
+    private var pending = ""
+
+    /// Adds a chunk and returns whatever complete lines that produced, keeping
+    /// any trailing partial line for next time.
+    func take(_ text: String) -> [String] {
+        pending += text
+
+        var lines: [String] = []
+        while let newline = pending.firstIndex(of: "\n") {
+            lines.append(String(pending[pending.startIndex..<newline]))
+            pending = String(pending[pending.index(after: newline)...])
+        }
+        return lines
+    }
 }
 
 /// Where the engine binary lives. Deliberately outside the window controller so
