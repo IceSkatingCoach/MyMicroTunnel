@@ -56,6 +56,8 @@ func main() {
 		runSupervise(os.Args[2:])
 	case "tunnel":
 		runTunnel(os.Args[2:])
+	case "diagnose":
+		runDiagnose(os.Args[2:])
 	case "version", "--version":
 		fmt.Println(version.String())
 	case "profiles":
@@ -76,6 +78,7 @@ func usage() {
   status     report whether the tunnel is up
   peers      list or remove the workstations a deployment serves from
   tunnel     up, down or status for the local WireGuard interface
+  diagnose   collect everything a support conversation would ask for
   supervise  run the reconcile loop; normally started by launchd
   version    print the build
 
@@ -607,6 +610,37 @@ func reportTunnel(interfaceName, address string) {
 	if !status.Connected(time.Now()) {
 		fmt.Println("  no peer has handshaken recently: the interface exists but carries nothing")
 	}
+}
+
+// runDiagnose is the first thing to ask somebody to run, and ideally the only
+// thing: it gathers in one pass what would otherwise take three rounds of
+// email. The output is meant to be pasted whole.
+func runDiagnose(args []string) {
+	flags := flag.NewFlagSet("diagnose", flag.ExitOnError)
+	defaults := setup.Defaults()
+	stackName := flags.String("stack", defaults.StackName, "CloudFormation stack name")
+	profile := flags.String("profile", "default", "AWS profile")
+	region := flags.String("region", "", "AWS region; taken from the profile when empty")
+	skipAWS := flags.Bool("no-aws", false, "skip the parts that need AWS credentials")
+	output := flags.String("o", "", "write to this file instead of the terminal")
+
+	_ = flags.Parse(args)
+
+	report := setup.Diagnose(context.Background(), setup.DiagnoseOptions{
+		StackName: *stackName,
+		Profile:   *profile,
+		Region:    *region,
+		SkipAWS:   *skipAWS,
+	})
+
+	if *output == "" {
+		fmt.Print(report)
+		return
+	}
+	if err := os.WriteFile(*output, []byte(report), 0o644); err != nil {
+		ui.Fail("Could not write %s: %v", *output, err)
+	}
+	fmt.Printf("Written to %s\n", *output)
 }
 
 func runStatus(args []string) {

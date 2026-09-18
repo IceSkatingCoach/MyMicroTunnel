@@ -125,11 +125,16 @@ func withdrawFromDeployment(ctx context.Context, options UninstallOptions, confi
 	ui.Done("Deregistered from the load balancer")
 }
 
-// installedTunnel reads the app's own config, so an uninstall uses the same
-// interface and wg-quick the install chose rather than guessing defaults.
+// installedTunnel reads the app's own config, so an uninstall — and the
+// diagnostics — use the interface and helper the install actually chose rather
+// than guessing defaults.
+//
+// The whole decoded value is kept. An earlier version copied four fields out of
+// it and left everything else zero, which made `diagnose` report a supervised
+// deployment as unsupervised and a configured health check as absent.
 func installedTunnel() appConfig {
 	defaults := Defaults()
-	config := appConfig{
+	fallback := appConfig{
 		InterfaceName: defaults.InterfaceName,
 		ClientAddress: defaults.ClientAddress,
 		HelperPath:    HelperPath,
@@ -137,22 +142,23 @@ func installedTunnel() appConfig {
 
 	content, err := os.ReadFile(AppConfigPath())
 	if err != nil {
-		return config
+		return fallback
 	}
 
 	var stored appConfig
 	if err := json.Unmarshal(content, &stored); err != nil {
-		return config
+		return fallback
 	}
-	if stored.InterfaceName != "" {
-		config.InterfaceName = stored.InterfaceName
+
+	// Only the fields the file left empty fall back.
+	if stored.InterfaceName == "" {
+		stored.InterfaceName = fallback.InterfaceName
 	}
-	if stored.HelperPath != "" {
-		config.HelperPath = stored.HelperPath
+	if stored.ClientAddress == "" {
+		stored.ClientAddress = fallback.ClientAddress
 	}
-	if stored.ClientAddress != "" {
-		config.ClientAddress = stored.ClientAddress
+	if stored.HelperPath == "" {
+		stored.HelperPath = fallback.HelperPath
 	}
-	config.ServicePort = stored.ServicePort
-	return config
+	return stored
 }
