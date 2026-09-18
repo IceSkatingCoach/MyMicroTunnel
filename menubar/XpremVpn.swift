@@ -65,6 +65,54 @@ struct Tunnel: Decodable {
     static let defaultDesiredStatePath =
         supportDirectory.appendingPathComponent("desired-state").path
 
+    // Decoded key by key rather than by the compiler's synthesised initialiser.
+    //
+    // That initialiser requires *every* key to be present: a property's default
+    // value is used when you write `Tunnel()`, not when a key is missing from
+    // the JSON. So the moment a new field is added here, every config written by
+    // an older version fails to decode — not partially, entirely — and
+    // `Tunnel.current` falls back to compiled defaults. The switch then drives
+    // the wrong interface at the wrong address through the wrong helper, with
+    // nothing logged and nothing shown.
+    //
+    // That is a live hazard now that updates install themselves: the config on
+    // disk is always at least one version behind the app that reads it.
+    private enum CodingKeys: String, CodingKey {
+        case interfaceName, clientAddress, gatewayAddress, helperPath
+        case healthCheckUrl, serviceUrl, supervised, desiredStatePath
+    }
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+
+        if let value = try values.decodeIfPresent(String.self, forKey: .interfaceName) {
+            interfaceName = value
+        }
+        if let value = try values.decodeIfPresent(String.self, forKey: .clientAddress) {
+            clientAddress = value
+        }
+        if let value = try values.decodeIfPresent(String.self, forKey: .gatewayAddress) {
+            gatewayAddress = value
+        }
+        if let value = try values.decodeIfPresent(String.self, forKey: .helperPath) {
+            helperPath = value
+        }
+        if let value = try values.decodeIfPresent(String.self, forKey: .healthCheckUrl) {
+            healthCheckUrl = value
+        }
+        if let value = try values.decodeIfPresent(String.self, forKey: .serviceUrl) {
+            serviceUrl = value
+        }
+        if let value = try values.decodeIfPresent(Bool.self, forKey: .supervised) {
+            supervised = value
+        }
+        if let value = try values.decodeIfPresent(String.self, forKey: .desiredStatePath) {
+            desiredStatePath = value
+        }
+    }
+
     static let current: Tunnel = {
         guard let data = try? Data(contentsOf: configURL),
               let decoded = try? JSONDecoder().decode(Tunnel.self, from: data)

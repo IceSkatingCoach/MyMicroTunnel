@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Xprem VPN — publish your Mac at a real hostname, only when you want to</title>
+<meta name="description" content="Publish a service running on your Mac at a public HTTPS hostname over a WireGuard tunnel into your own AWS account. Free software, GPLv3, about USD 26/month in AWS costs.">
+<meta property="og:title" content="Xprem VPN">
+<meta property="og:description" content="Publish a service running on your Mac at a public HTTPS hostname — and switch it off again.">
+<meta property="og:type" content="website">
+<style>
+  :root {
+    --ink: #11161d;
+    --ink-soft: #4a5568;
+    --ink-faint: #8593a5;
+    --paper: #ffffff;
+    --wash: #f6f8fb;
+    --line: #e3e8ef;
+    --accent: #1f6feb;
+    --accent-dark: #17549c;
+    --good: #1a7f4b;
+    --warn: #9a6700;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e6edf3; --ink-soft: #a9b4c0; --ink-faint: #7d8998;
+      --paper: #0d1117; --wash: #151b23; --line: #263041;
+      --accent: #58a6ff; --accent-dark: #79b8ff;
+      --good: #4ac585; --warn: #d4a72c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 24px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, pre { font-family: var(--mono); font-size: 13.5px; }
+  code { background: var(--wash); padding: 2px 6px; border-radius: 4px; }
+  pre {
+    background: var(--wash); border: 1px solid var(--line); border-radius: 10px;
+    padding: 16px 18px; overflow-x: auto; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; }
+
+  header { border-bottom: 1px solid var(--line); background: var(--wash); }
+  .nav { display: flex; align-items: center; gap: 22px; padding: 16px 0; font-size: 14px; }
+  .brand { font-weight: 700; letter-spacing: -0.2px; margin-right: auto; color: var(--ink); }
+  .nav a { color: var(--ink-soft); }
+
+  .hero { padding: 72px 0 56px; }
+  h1 { font-size: clamp(32px, 5vw, 46px); line-height: 1.12; letter-spacing: -1px; margin: 0 0 18px; }
+  .lede { font-size: 19px; color: var(--ink-soft); max-width: 62ch; margin: 0 0 14px; }
+  .sub { font-size: 15px; color: var(--ink-faint); max-width: 62ch; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 30px 0 0; }
+  .btn {
+    display: inline-block; padding: 11px 20px; border-radius: 8px; font-size: 15px;
+    font-weight: 600; border: 1px solid transparent;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-dark); text-decoration: none; }
+  .btn-ghost { border-color: var(--line); color: var(--ink); }
+  .btn-ghost:hover { border-color: var(--ink-faint); text-decoration: none; }
+
+  section { padding: 52px 0; border-top: 1px solid var(--line); }
+  h2 { font-size: 26px; letter-spacing: -0.4px; margin: 0 0 10px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  .section-lede { color: var(--ink-soft); max-width: 66ch; margin: 0 0 24px; }
+
+  .diagram {
+    background: var(--wash); border: 1px solid var(--line); border-radius: 12px;
+    padding: 22px; overflow-x: auto; margin: 26px 0 0;
+  }
+  .diagram pre { background: none; border: none; padding: 0; color: var(--ink-soft); font-size: 13px; }
+
+  .grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .card { border: 1px solid var(--line); border-radius: 12px; padding: 20px; background: var(--paper); }
+  .card h3 { margin: 0 0 6px; font-size: 16px; }
+  .card p { margin: 0; color: var(--ink-soft); font-size: 14.5px; }
+
+  table { width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 15px; }
+  th, td { text-align: left; padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--ink-faint); font-weight: 600; }
+  td.num { font-family: var(--mono); white-space: nowrap; }
+  tfoot td { font-weight: 700; border-bottom: none; border-top: 2px solid var(--line); }
+
+  .note {
+    border-left: 3px solid var(--accent); background: var(--wash);
+    padding: 14px 18px; border-radius: 0 8px 8px 0; margin: 22px 0; font-size: 15px;
+  }
+  .note.warn { border-left-color: var(--warn); }
+  .note strong { color: var(--ink); }
+
+  ol.steps { counter-reset: s; list-style: none; padding: 0; margin: 24px 0 0; }
+  ol.steps > li { counter-increment: s; position: relative; padding: 0 0 22px 46px; }
+  ol.steps > li::before {
+    content: counter(s); position: absolute; left: 0; top: -2px;
+    width: 30px; height: 30px; border-radius: 50%; background: var(--accent); color: #fff;
+    display: grid; place-items: center; font-size: 14px; font-weight: 700;
+  }
+  ol.steps h3 { margin: 2px 0 6px; }
+  ol.steps p { margin: 0 0 8px; color: var(--ink-soft); font-size: 15px; }
+
+  .pill { display: inline-block; font-size: 12px; font-weight: 600; padding: 3px 9px;
+          border-radius: 20px; background: var(--wash); border: 1px solid var(--line); color: var(--ink-soft); }
+  .pill.good { color: var(--good); border-color: currentColor; }
+
+  footer { border-top: 1px solid var(--line); padding: 36px 0 60px; color: var(--ink-faint); font-size: 14px; }
+  footer a { color: var(--ink-soft); }
+  .foot-grid { display: flex; flex-wrap: wrap; gap: 30px; justify-content: space-between; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <span class="brand">Xprem VPN</span>
+    <a href="#how">How it works</a>
+    <a href="#install">Install</a>
+    <a href="#costs">Costs</a>
+    <a href="#licence">Licence</a>
+    <a href="#help">Contribute</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="hero">
+    <h1>Publish your Mac at a real hostname.<br>Switch it off when you're done.</h1>
+    <p class="lede">
+      Xprem VPN gives a service running on your laptop a public HTTPS address —
+      <code>updates.example.com</code>, with a real certificate — by routing it through an AWS
+      load balancer and a WireGuard tunnel you control.
+    </p>
+    <p class="sub">
+      It runs entirely in <strong>your</strong> AWS account. Nothing is hosted for you,
+      no traffic passes through anyone else's servers, and there is no account to sign up for.
+      The menu bar switch is the only thing that decides whether the world can reach you.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#install">Install it</a>
+      <a class="btn btn-ghost" href="https://github.com/IceSkatingCoach/wiregard_mini_vpn">Source on GitHub</a>
+      <a class="btn btn-ghost" href="mailto:xpremvpn@maragato.ca">xpremvpn@maragato.ca</a>
+    </div>
+  </div>
+
+  <div class="diagram">
+<pre>client ──TLS──▶ NLB :443 ──▶ 10.100.0.2:3000
+                              │
+                      VPC route 10.100.0.0/24
+                              ▼
+                      gateway instance (Elastic IP)
+                              │  WireGuard
+                              ▼
+                      your Mac 10.100.0.2 ──▶ your service :3000</pre>
+  </div>
+
+  <section id="why">
+    <h2>What it is for</h2>
+    <p class="section-lede">
+      Some things are better served from a machine you can see. A staging build, an update
+      feed, a demo, a service whose data should not leave the building. What those have in
+      common is that they want a real hostname and a real certificate — and that they should
+      not be reachable at three in the morning when nobody is watching.
+    </p>
+    <div class="grid">
+      <div class="card">
+        <h3>A hostname, not a tunnel URL</h3>
+        <p>Your own domain, your own ACM certificate, a Route53 record. Not a random
+           subdomain that changes every restart.</p>
+      </div>
+      <div class="card">
+        <h3>Off by default</h3>
+        <p>The tunnel is a switch, not a daemon that quietly holds the door open. Disconnect
+           and the hostname stops answering.</p>
+      </div>
+      <div class="card">
+        <h3>No inbound port forward</h3>
+        <p>Your Mac dials out. Nothing has to change on your router, and a new IP address
+           from your ISP re-pins itself.</p>
+      </div>
+      <div class="card">
+        <h3>Your account, your bill</h3>
+        <p>No middleman, no per-seat pricing, no rate limit. The only cost is the AWS
+           resources, itemised below.</p>
+      </div>
+      <div class="card">
+        <h3>Several Macs, one hostname</h3>
+        <p>Register more than one workstation and the load balancer spreads across them.
+           Adding one does not interrupt the others.</p>
+      </div>
+      <div class="card">
+        <h3>Repairs itself</h3>
+        <p>The gateway is an Auto Scaling group of one. A failed instance is replaced, keeps
+           the same address and the same identity.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <p class="section-lede">
+      An AWS Network Load Balancer holds your certificate and terminates TLS. Behind it, a
+      small gateway instance forwards to a private address that lives on your Mac, reached
+      over WireGuard. The tunnel dials outward, so your network needs no changes.
+    </p>
+
+    <h3>Why not AWS Site-to-Site VPN</h3>
+    <p class="section-lede">
+      It needs a fixed public IP address, because AWS answers the IKE negotiation rather than
+      starting it — and a laptop behind a residential NAT does not have one. AWS does support
+      a certificate-based gateway with no address for exactly this case, but it requires an
+      ACM Private CA at roughly <strong>USD 400/month</strong>, more than everything here
+      combined. WireGuard inverts the direction and costs nothing extra.
+    </p>
+
+    <h3>Nothing to install first</h3>
+    <p class="section-lede">
+      The package carries its own WireGuard. macOS has no in-kernel implementation, so the
+      data plane is <code>wireguard-go</code> — MIT-licensed, built from a pinned and
+      checksummed release, shipped inside the installer and signed with the same identity.
+      No Homebrew, no AWS CLI, no Node, no Python.
+    </p>
+    <div class="note">
+      <strong>Why not <code>wg-quick</code>?</strong> On macOS it is a bash script that needs
+      bash 4, which macOS has not shipped since 2007 for licensing reasons. Rather than drag
+      in a second installer, everything it did is implemented directly against wireguard-go's
+      documented UAPI socket. The config file written to <code>/etc/wireguard/wg0.conf</code>
+      is still wg-quick's format, so the standard tools can drive the same tunnel if you have
+      them.
+    </div>
+
+    <h3>The privileged part is small</h3>
+    <p class="section-lede">
+      Moving a tunnel needs root. Rather than a background daemon with broad powers, the app
+      gets one <code>sudoers</code> rule scoped to two exact command lines — raise this
+      interface, drop this interface — pointing at a root-owned helper in
+      <code>/Library/PrivilegedHelperTools</code>, a directory no package manager takes
+      ownership of. Your WireGuard private key is generated on your Mac and never leaves it.
+    </p>
+  </section>
+
+  <section id="install">
+    <h2>Installing</h2>
+    <p class="section-lede">
+      About ten minutes, most of it AWS building the load balancer. The installer stops at the
+      first thing that fails and names it, rather than reporting success on a half-built tunnel.
+    </p>
+
+    <h3>You will need</h3>
+    <table>
+      <tr><td>A Mac</td><td>macOS 13 or later, Apple silicon or Intel</td></tr>
+      <tr><td>An administrator account</td><td>one password prompt, covering three files</td></tr>
+      <tr><td>An AWS account</td><td>the resources cost roughly USD 26/month</td></tr>
+      <tr><td>A domain in Route53</td><td>in that account, as a <em>public</em> hosted zone</td></tr>
+      <tr><td>A service to publish</td><td>running on your Mac, on a known port</td></tr>
+    </table>
+
+    <div class="note warn">
+      <strong>Your service must listen on all interfaces.</strong> The load balancer reaches
+      your Mac at its tunnel address, <code>10.100.0.2</code> — not <code>127.0.0.1</code>. A
+      service bound to loopback is invisible to it, and the only symptom is a health check
+      that never passes. With Docker that means <code>-p 3000:3000</code>, not
+      <code>-p 127.0.0.1:3000:3000</code>.
+    </div>
+
+    <ol class="steps">
+      <li>
+        <h3>Create AWS credentials for the installer</h3>
+        <p>In IAM, create a policy from the published
+           <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn/blob/main/docs/deploy-policy.json">least-privilege deploy policy</a>,
+           attach it to a new user, and create an access key. A dedicated key, not an
+           administrator one. If you already have a working AWS CLI profile, skip this.</p>
+      </li>
+      <li>
+        <h3>Check your hosted zone</h3>
+        <p>You need a public Route53 zone for the domain you will serve from. The installer
+           finds it on its own; it only has to exist.</p>
+      </li>
+      <li>
+        <h3>Open the installer</h3>
+        <p>Signed and notarized. It places the app, a command-line tool, the privileged
+           helper and the tunnel, then opens the setup window by itself.</p>
+      </li>
+      <li>
+        <h3>Answer six questions</h3>
+        <p>Credentials, the hostname to serve, your service's port, and — optionally — an
+           address to email when the gateway fails and whether the tunnel should come back
+           after a reboot.</p>
+      </li>
+      <li>
+        <h3>Approve one password prompt</h3>
+        <p>It covers the tunnel configuration, your private key, and the narrow sudoers rule.
+           Nothing else asks again.</p>
+      </li>
+      <li>
+        <h3>Watch it prove itself</h3>
+        <p>The last stage checks every hop in the order traffic travels: tunnel up, gateway
+           answers, load balancer healthy, hostname returns 200. A clean run means it is live
+           right now.</p>
+      </li>
+    </ol>
+
+    <h3>Or from a terminal</h3>
+<pre><code>wiregard-mini-vpn install --domain updates.example.com --port 3000
+wiregard-mini-vpn status
+wiregard-mini-vpn peers</code></pre>
+  </section>
+
+  <section id="costs">
+    <h2>What it costs</h2>
+    <p class="section-lede">
+      Xprem VPN itself is free software and costs nothing. What you pay is AWS, billed to your
+      own account, and you can see every resource it creates in the published CloudFormation
+      template before you run it.
+    </p>
+
+    <table>
+      <thead>
+        <tr><th>Resource</th><th>Why it is there</th><th>USD / month</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Network Load Balancer</td>
+          <td>Holds the certificate, terminates TLS, gives the hostname something stable to point at</td>
+          <td class="num">~16.00</td>
+        </tr>
+        <tr>
+          <td><code>t4g.micro</code> gateway</td>
+          <td>Terminates the WireGuard tunnel and forwards into the VPC</td>
+          <td class="num">~6.00</td>
+        </tr>
+        <tr>
+          <td>Elastic IP</td>
+          <td>The fixed address your Mac dials, so a replacement gateway keeps the same endpoint</td>
+          <td class="num">~3.60</td>
+        </tr>
+        <tr>
+          <td>Route53, ACM, SSM, CloudWatch</td>
+          <td>DNS record, certificate, peer registry, alarms</td>
+          <td class="num">~0.50</td>
+        </tr>
+      </tbody>
+      <tfoot>
+        <tr><td>Total</td><td>plus load balancer capacity units and data transfer</td><td class="num">~26</td></tr>
+      </tfoot>
+    </table>
+
+    <div class="note">
+      <strong>The load balancer is most of the bill.</strong> If that is not worth it for your
+      use, this is the wrong tool and you should say so — a single instance with a reverse
+      proxy is cheaper and simpler. Xprem VPN is for when you want the traffic ending up on a
+      machine you can see, at a name you own, with a switch you control.
+    </div>
+
+    <p class="section-lede">
+      Alarms and their notification topic are only created if you give an address to notify.
+      Nothing is created that you did not ask for, and <code>uninstall</code> removes all of
+      it, including the parameters the gateway wrote for itself.
+    </p>
+  </section>
+
+  <section id="licence">
+    <h2>Licence</h2>
+    <p class="section-lede">
+      <span class="pill good">GPL-3.0-or-later</span>
+      Xprem VPN is free software. You may use it, read it, change it, and pass it on — and
+      anyone you give a binary to has the same rights, including the right to the source.
+    </p>
+
+    <h3>What that means in practice</h3>
+    <table>
+      <tr><td><strong>Run it for anything</strong></td><td>Commercial use included. There is no seat count, no licence key, and nothing phones home.</td></tr>
+      <tr><td><strong>Read every line</strong></td><td>Including the part that runs as root and the template that spends your money.</td></tr>
+      <tr><td><strong>Change it</strong></td><td>And ship your changes, under the same licence.</td></tr>
+      <tr><td><strong>No warranty</strong></td><td>As with all free software. It is tested, but it is yours to run.</td></tr>
+    </table>
+
+    <p class="section-lede">
+      Third-party components are listed in full in the repository. <code>wireguard-go</code> is
+      MIT, Sparkle is MIT, the AWS SDK is Apache-2.0, and the <code>golang.org/x</code>
+      libraries are BSD — all compatible with GPLv3. Notably Apache-2.0 is compatible with
+      GPLv3 and <em>not</em> GPLv2, which is part of why version 3 was the only sensible choice.
+    </p>
+  </section>
+
+  <section id="help">
+    <h2>Help make it better</h2>
+    <p class="section-lede">
+      This is a small project with a clear shape and a lot of obvious next steps. If any of
+      these are interesting, they are genuinely open — not a wishlist someone is quietly
+      already doing.
+    </p>
+
+    <div class="grid">
+      <div class="card">
+        <h3>A Windows or Linux client</h3>
+        <p>The AWS side is platform-neutral and the tunnel logic is ordinary Go. What is
+           missing is the platform-specific interface handling and a front end.</p>
+      </div>
+      <div class="card">
+        <h3>A cheaper shape</h3>
+        <p>The load balancer is most of the cost. A design that keeps the static address and
+           the certificate without it would change the economics.</p>
+      </div>
+      <div class="card">
+        <h3>Onboarding for non-AWS people</h3>
+        <p>Step one is still "create an IAM policy". That is a reasonable ask for an
+           engineer and a wall for everyone else.</p>
+      </div>
+      <div class="card">
+        <h3>A diagnostics bundle</h3>
+        <p>When it misbehaves on someone else's machine there is no single command that
+           collects what a maintainer would need to see.</p>
+      </div>
+      <div class="card">
+        <h3>Integration tests against real AWS</h3>
+        <p>CI checks everything except the part that actually deploys. A throwaway-account
+           test would have caught more than one bug earlier.</p>
+      </div>
+      <div class="card">
+        <h3>Tell us it broke</h3>
+        <p>Bug reports are contributions. What you did, what happened, and the output of
+           <code>wiregard-mini-vpn status</code> is plenty to start from.</p>
+      </div>
+    </div>
+
+    <h3>Getting in touch</h3>
+    <p class="section-lede">
+      Email <a href="mailto:xpremvpn@maragato.ca"><strong>xpremvpn@maragato.ca</strong></a>, or
+      open an issue or pull request on
+      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn">GitHub</a>.
+      <code>make check</code> is the gate — vet, formatting, tests, and CloudFormation
+      linting over both templates. If that passes, the change is in good shape.
+    </p>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap foot-grid">
+    <div>
+      <strong style="color: var(--ink)">Xprem VPN</strong><br>
+      Free software under the GNU General Public License v3 or later.
+    </div>
+    <div>
+      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn">Source</a> ·
+      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn/blob/main/LICENSE">Licence</a> ·
+      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> ·
+      <a href="mailto:xpremvpn@maragato.ca">xpremvpn@maragato.ca</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

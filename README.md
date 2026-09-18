@@ -1,268 +1,321 @@
-# wiregard_mini_vpn
+# Xprem VPN
 
-A small WireGuard tunnel that lets an AWS Network Load Balancer publish a
-service running on a workstation, plus the macOS menu bar switch that raises and
-drops that tunnel on demand.
+Publish a service running on your Mac at a public HTTPS hostname, and turn it
+off again when you are done.
 
-It exists because some services are better served from a laptop than from
-Fargate — and that laptop should only be reachable while someone wants it to be.
+An AWS Network Load Balancer terminates TLS and forwards to your workstation
+over a WireGuard tunnel. A menu bar switch raises and drops that tunnel, so the
+hostname answers only while you want it to.
 
 ```
 client ──TLS──▶ NLB :443 ──▶ 10.100.0.2:3000
                               │
                       VPC route 10.100.0.0/24
                               ▼
-                      gateway instance (EIP)
+                      gateway instance (Elastic IP)
                               │  WireGuard
                               ▼
-                      workstation 10.100.0.2 ──▶ service :3000
+                      your Mac 10.100.0.2 ──▶ your service :3000
 ```
 
-The AWS account is the customer's. Nothing in the template names a particular
-account, and the installer discovers the VPC, the subnets, the route tables and
-the Route53 zone rather than asking anyone to look them up.
+Everything runs in **your** AWS account. Nothing is hosted for you, and no
+traffic passes through anyone else.
 
-## Why not AWS Site-to-Site VPN
+---
 
-An `AWS::EC2::CustomerGateway` needs a fixed public IP address, because AWS
-answers the IKE negotiation rather than starting it. A workstation behind a
-residential NAT does not have one. AWS does support a certificate-based customer
-gateway with no address for exactly this case, but it requires an ACM Private CA
-at roughly USD 400 per month, an order of magnitude more than everything else
-here combined.
+# Installing
 
-WireGuard inverts the direction. The workstation dials out to an Elastic IP, so
-no inbound port forward is needed on the home router, and `PersistentKeepalive`
-re-pins the tunnel after the ISP hands out a new address.
+## Before you start
+
+You need five things. The install stops and names whichever one is missing
+rather than half-finishing, but it is quicker to have them ready.
+
+| | |
+| --- | --- |
+| A Mac | macOS 13 or later, Apple silicon or Intel |
+| An administrator account | one password prompt, for three files |
+| An AWS account | the resources cost roughly **USD 26/month** |
+| A domain in Route53 | in that same account, as a *public* hosted zone |
+| A service to publish | running on your Mac, on a known port |
+
+You do **not** need Homebrew, the AWS CLI, Node, Python, or WireGuard. The
+installer carries everything it uses.
+
+### Your service must listen on all interfaces
+
+This is the one that catches people. The load balancer reaches your Mac at its
+tunnel address, `10.100.0.2` — not at `127.0.0.1`. A service bound to loopback
+is invisible to it, and the only symptom is a health check that never passes.
+
+With Docker, the published port must not be pinned to loopback:
+
+```sh
+docker run -p 3000:3000 ...            # reachable over the tunnel
+docker run -p 127.0.0.1:3000:3000 ...  # not reachable, health checks fail
+```
+
+Check it the way the load balancer will, once the tunnel is up:
+
+```sh
+curl http://10.100.0.2:3000/hc
+```
+
+Your service also needs a path that returns **200** for health checks. `/hc` is
+the default; you can set another during setup.
+
+---
+
+## Step 1 — Create AWS credentials for the installer
+
+The installer deploys into your account, so it needs a key. Give it a dedicated
+one with only the permissions it uses, rather than an administrator key.
+
+1. AWS console → **IAM** → **Policies** → **Create policy**.
+2. Choose the **JSON** tab and paste [`docs/deploy-policy.json`](docs/deploy-policy.json).
+3. Name it `XpremVpnDeploy` and create it.
+4. **Users** → **Create user**, name it `xprem-vpn-deploy`, attach that policy.
+5. Open the user → **Security credentials** → **Create access key** →
+   **Command Line Interface**. Copy the access key ID and the secret.
+
+You will paste that secret once and not need it again.
+
+> Already have the AWS CLI configured with a profile that can deploy? Skip this
+> step — the setup window offers your existing profiles instead.
+
+## Step 2 — Check your hosted zone
+
+**Route53** → **Hosted zones**. You need a **public** zone for the domain you
+intend to serve from: `example.com` if the hostname will be
+`updates.example.com`.
+
+The installer finds the zone itself. It only has to exist, and be public rather
+than private.
+
+## Step 3 — Install the app
+
+Open `XpremVpn.pkg` and follow the installer. It places:
+
+```
+/Applications/XpremVpn.app                                   the menu bar app
+/usr/local/bin/wiregard-mini-vpn                             the same tool, for terminals
+/Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper  the part that needs root
+/usr/local/lib/wiregard-mini-vpn/wireguard-go                the tunnel itself
+```
+
+The app opens by itself when the installer finishes.
+
+## Step 4 — Fill in the setup window
+
+| Field | What to put |
+| --- | --- |
+| **AWS credentials** | An existing profile, or *Enter an access key* and the two values from step 1 |
+| **Region** | Leave empty to use the region your profile already names |
+| **Stack name** | `xprem-onprem-vpn` unless you are deploying a second one |
+| **Public hostname** | The name to serve, e.g. `updates.example.com` |
+| **Local service port** | The port your service listens on |
+| **Health check path** | A path that returns 200. Default `/hc` |
+| **Notify on failure** | Optional. An address to alarm when the gateway dies |
+| **Restore the tunnel after a reboot** | Tick if the hostname should come back on its own |
+
+Press **Install**. The window shows each step as it happens.
+
+## Step 5 — Approve the one password prompt
+
+Partway through, macOS asks for your administrator password. It covers exactly
+three things:
+
+- `/etc/wireguard/wg0.conf` — the tunnel's configuration
+- `/etc/wireguard/client.key` — your private key, which never leaves the Mac
+- `/etc/sudoers.d/xprem-vpn` — permission for the menu bar to move the tunnel
+  without asking again
+
+If you ticked *Restore the tunnel after a reboot*, it also installs the
+background service that does that.
+
+## Step 6 — Wait for it to prove itself
+
+The last stage is not a summary; it is a series of checks, in the order traffic
+travels:
+
+1. the tunnel comes up
+2. the gateway answers a ping
+3. the load balancer reports your Mac as healthy
+4. `https://your-hostname/hc` returns 200
+
+If any fails it says which, and stops. A clean run means the hostname is live
+right now.
+
+Roughly ten minutes end to end, most of it AWS building the load balancer.
+
+---
+
+# Using it
+
+The padlock in the menu bar is the switch. Filled is connected; outline is not.
+
+| | |
+| --- | --- |
+| **Connect / Disconnect** | Raise or drop the tunnel. Disconnected means the hostname stops answering |
+| **Test tunnel** | Pings the gateway. Proves packets cross, not just that an interface exists |
+| **Open health check** | Opens your hostname in a browser |
+| **Setup…** | Re-run the deployment, or change a setting |
+| **Check for Updates…** | Fetches a new version if there is one |
+
+If you turned on *Restore the tunnel after a reboot*, the switch is still the
+only thing that decides. The background service remembers your last choice and
+puts it back after a restart or a sleep — including re-pinning the tunnel when
+your home IP address changes, which otherwise leaves an interface that exists
+but carries nothing.
+
+## Adding a second Mac
+
+A deployment can serve from several machines. Run the installer on the second
+one with a different tunnel address:
+
+```sh
+wiregard-mini-vpn install --domain updates.example.com --client-ip 10.100.0.3
+```
+
+Adding a machine does not interrupt the ones already serving.
+
+```sh
+wiregard-mini-vpn peers                        # who is registered
+wiregard-mini-vpn peers --remove 10.100.0.3    # retire one
+```
+
+## Checking on it
+
+```sh
+wiregard-mini-vpn status                       # is the tunnel up
+sudo wiregard-mini-vpn tunnel status wg0       # and is anything crossing it
+```
+
+The second needs `sudo` because the handshake is only readable by root.
+
+---
+
+# When something is wrong
+
+**The hostname does not answer, but the tunnel is up.**
+Almost always the service is bound to loopback. If `curl http://10.100.0.2:3000/hc`
+is refused while `127.0.0.1` works, rebind the service to all interfaces.
+
+**The tunnel connects but nothing crosses it.**
+`sudo wiregard-mini-vpn tunnel status wg0`. A peer with `last handshake never`
+means the gateway has not accepted this Mac. Re-run setup.
+
+**"wg-quick up failed", or anything mentioning bash.**
+An old version is still installed. This product does not use `wg-quick`.
+Re-install the package.
+
+**The load balancer says unhealthy.**
+The health check path must return 200 over plain HTTP on your service's port.
+Test it exactly as the load balancer does: `curl -i http://10.100.0.2:3000/hc`.
+
+**A deploy failed partway.**
+Re-run it. Existing keys and stacks are reused, and a deploy with nothing to
+change is treated as success.
+
+## Removing it
+
+```sh
+wiregard-mini-vpn uninstall
+```
+
+Removes the app, the tunnel, the sudoers rule and the background service, and
+takes this Mac out of the deployment so the load balancer stops sending it
+traffic. Your private key and the AWS stack are only touched if you say yes to
+each — deleting the stack takes the hostname down for every machine.
+
+---
+
+# What it costs
+
+About **USD 26/month** in your account:
+
+| | |
+| --- | --- |
+| Network Load Balancer | ~16, plus capacity units |
+| `t4g.micro` gateway | ~6 |
+| Elastic IP | ~3.60 |
+
+Alarms and their notification topic are only created if you give an address to
+notify.
+
+---
+
+# How it works
+
+## Why WireGuard and not AWS Site-to-Site VPN
+
+`AWS::EC2::CustomerGateway` needs a fixed public IP, because AWS answers the IKE
+negotiation rather than starting it. A workstation behind a residential NAT does
+not have one. AWS does support a certificate-based customer gateway with no
+address for this case, but it needs an ACM Private CA at roughly USD 400/month —
+more than everything else here combined.
+
+WireGuard inverts the direction. Your Mac dials out to an Elastic IP, so no
+inbound port forward is needed on your router, and `PersistentKeepalive` re-pins
+the tunnel when your ISP changes your address.
 
 ## Nothing to install first
 
-The package carries its own WireGuard. macOS has no in-kernel WireGuard, so the
-data plane has to run in userspace; that is `wireguard-go`, which is MIT, is
-built from a pinned and checksummed release by `make wireguard`, and ships inside
-the package.
+macOS has no in-kernel WireGuard, so the data plane runs in userspace: that is
+`wireguard-go`, MIT-licensed, built from a pinned and checksummed release and
+shipped inside the package.
 
-`wg(8)` and `wg-quick(8)` are not shipped and not needed. `wg-quick` on macOS is
-a bash script that needs bash 4, which macOS has not had since 2007, and
-`wireguard-tools` is GPLv2 — between them that meant depending on Homebrew, on a
-second installer, and on a licence this package would otherwise have to carry.
-Everything they did here is in `internal/tunnel`, which speaks wireguard-go's
-[UAPI](https://www.wireguard.com/xplatform/) directly. The config file it writes
-is still wg-quick's format, so the Homebrew tools can drive the same tunnel if
-they happen to be installed.
+`wg(8)` and `wg-quick(8)` are **not** shipped and not needed. `wg-quick` on macOS
+is a bash script that needs bash 4, which macOS has not shipped since 2007 —
+which is why Homebrew's formula pulls in its own. Everything those tools did is
+in `internal/tunnel`, which speaks wireguard-go's
+[UAPI](https://www.wireguard.com/xplatform/) directly. The config written to
+`/etc/wireguard/wg0.conf` is still wg-quick's format, so those tools can drive
+the same tunnel if you happen to have them.
 
-See `THIRD-PARTY-NOTICES.md`.
+## The gateway repairs itself
 
-## Two front ends, one implementation
+It is an Auto Scaling group of one. A replacement claims the Elastic IP,
+rewrites the VPN route, turns off its own source/destination check and reads its
+WireGuard identity back out of SSM — so a failed instance is replaced rather
+than mourned, and every Mac's config keeps pointing somewhere real. A
+replacement still takes a few minutes, during which the hostname is dark.
 
-The deployment logic lives once, in a Go binary. Everything else drives it.
+## The privileged part is small
 
-| Front end | For |
-| --- | --- |
-| `wiregard-mini-vpn` in a terminal | scripted or headless installs |
-| The app's setup window | the packaged product, where there is no terminal |
-
-The setup window runs the same binary with `--json` and renders the NDJSON
-events it emits, so the two cannot drift apart. The binary is embedded in the
-app bundle and installed on the path, and it is the same file in both places.
-
-Because the binary uses the AWS SDK directly, an installed copy depends on
-nothing the user has to fetch first: no AWS CLI, no Node, no Python. The
-CloudFormation template is compiled into it with `go:embed`.
-
-## Install
-
-From a source checkout:
-
-```sh
-make install DOMAIN=updates.example.com   # deploy and configure
-make uninstall                            # remove; the stack and the private key need an explicit yes
-```
-
-From the package: open `XpremVpn.pkg`. It installs the app and opens it, and the
-first run is the setup window — AWS profile or access key, hostname, then a live
-log of the deployment.
-
-Either way the flow is the same:
-
-1. find the bundled `wireguard-go`;
-2. check the answers before anything costs money, and discover the VPC, the
-   public subnets, the route tables and the hosted zone for the hostname;
-3. generate the WireGuard private key locally and keep it here;
-4. deploy the stack with a change set, and wait for the gateway to publish its
-   own public key to SSM;
-5. register this workstation in the gateway's peer list and behind the load
-   balancer;
-6. write `/etc/wireguard/wg0.conf`, the private key and the sudoers rule — the
-   only steps that need root;
-7. install the app, and offer to open it at login;
-8. raise the tunnel, ping the gateway, wait for the load balancer target to go
-   healthy, and check that the public hostname returns 200.
-
-It stops at the first step that fails and names it, rather than reporting success
-on a half-built tunnel. Re-running resumes: existing keys and stacks are reused,
-and a deploy with nothing to change is treated as success.
-
-In the window, the privileged step is a single macOS authorisation dialog. In a
-terminal, `sudo` prompts as usual.
-
-### More than one workstation
-
-A deployment can serve from several machines. The peer list lives in SSM at
-`/<stack>/wireguard/peers` and the gateway reconciles against it once a minute,
-so adding a workstation is one API call rather than a stack update — and it does
-not interrupt the machines already serving.
-
-```sh
-wiregard-mini-vpn peers --stack xprem-onprem-vpn
-wiregard-mini-vpn peers --stack xprem-onprem-vpn --remove 10.100.0.3
-```
-
-Run the installer on the second machine with `--client-ip 10.100.0.3`.
-
-### Keeping the tunnel across a reboot
-
-`--supervise`, or the checkbox in the setup window, installs a LaunchDaemon that
-holds the tunnel at whatever state the menu bar last asked for. It is not "keep
-the tunnel up": the switch is still the only thing that decides. The app writes
-`up` or `down` to a file it owns, with no privileges at all, and root reconciles
-towards it — including re-pinning a tunnel whose interface still exists but whose
-peer has gone quiet, which is what a changed public address looks like from here.
-
-## Updates
-
-The app updates itself through [Sparkle](https://sparkle-project.org). Updates
-are delivered as the same signed, notarized `.pkg` the first install uses —
-`sparkle:installationType="package"` — because this product owns root-owned
-files outside the app bundle, and swapping the bundle alone would leave the
-helper, the supervisor and `wireguard-go` at the old version.
-
-Cutting a release:
-
-```sh
-make sparkle-keys                     # once, ever: EdDSA keypair into the login Keychain
-make pkg-notarized PROFILE=wiregard \
-     APPCAST_FEED_URL=https://downloads.example.com/xpremvpn/appcast.xml \
-     SPARKLE_PUBLIC_KEY=<the public half>
-make appcast APPCAST_BASE_URL=https://downloads.example.com/xpremvpn
-```
-
-### Where the feed lives
-
-`infra/cloudformation-updates.yaml` is the feed's own infrastructure — a private
-S3 bucket published through one CloudFront distribution. It belongs to **your**
-account, not a customer's: the VPN stack is deployed once per customer and pays
-for itself there, while this one is deployed once and every copy of the app ever
-shipped reads from it.
-
-```sh
-make feed-setup FEED_BUCKET=xpremvpn-downloads FEED_DOMAIN=downloads.example.com
-```
-
-It prints the two URLs a release needs. Deploy it in `us-east-1`: CloudFront
-only reads ACM certificates from there.
-
-CloudFront rather than API Gateway in front of S3, because API Gateway caps an
-integration payload at 10 MB with no setting to raise it. The appcast is about a
-kilobyte and would fit; the 30-plus MB release archive would not, so the archive
-would need a second front door. CloudFront serves both from one hostname and
-costs less per request.
-
-The archives are a plain public download, and that is deliberate. Sparkle
-refuses any archive whose EdDSA signature does not verify against the public key
-compiled into the app, so the signature is the security boundary and the
-transport is a convenience.
-
-### Publishing
-
-```sh
-make release PROFILE=wiregard \
-     APPCAST_FEED_URL=https://downloads.example.com/appcast.xml \
-     SPARKLE_PUBLIC_KEY=<the public half> \
-     APPCAST_BASE_URL=https://downloads.example.com/releases
-```
-
-That runs the checks, builds and notarizes the package, writes and signs the
-feed, uploads both, invalidates the cached feed, and then reads the feed back
-over its public URL — because everything before that step proves what was
-uploaded, and only that step proves what will be served.
-
-`make publish` does the upload half on its own. It refuses to overwrite an
-archive for a version that is already published: two machines running different
-software under one version number is a problem that surfaces months later. Raise
-`VERSION`, or pass `--force` if it is genuinely the same build.
-
-The archive is uploaded before the appcast, always. A feed naming an archive
-that is not there yet is a feed every installed copy tries and fails to update
-from.
-
-`make appcast-validate` re-checks a feed without rewriting it — that the XML
-parses, that the enclosure's length matches the file, that the advertised
-version matches the package, and that the built app actually carries a feed URL
-and a public key. That last check exists because the failure it catches is
-silent: an app built without `APPCAST_FEED_URL` is a perfectly good app that
-will never ask for an update, and nothing else notices.
-
-Three things worth knowing:
-
-- **`CFBundleVersion` is the release number, not the commit.** Sparkle compares
-  that field to decide what is newer, and a git hash does not order. The commit
-  is in `XpremBuildCommit`.
-- **`sign_update --verify` reads the login Keychain and ignores
-  `--ed-key-file`.** A release cut on a machine that holds the key is verified
-  end to end; one signed from an exported key file — CI — is signed by Sparkle's
-  own signer but cannot be re-verified in the same run, and `make appcast` says
-  so rather than implying otherwise.
-- **Back the private key up.** Losing it means no installed copy can ever be
-  updated again, and every user has to be sent a package by hand.
-
-An app built without `APPCAST_FEED_URL` simply has no updater, and says
-"Built without an update feed" in its menu rather than failing quietly.
-
-## Permissions
-
-`docs/deploy-policy.json` is the least-privilege policy for the identity that
-runs the installer. Attach it to a dedicated deploy user or role rather than
-handing the installer an administrator key.
-
-Day-to-day operation needs almost none of it: the running gateway uses its own
-instance role, and adding or retiring a workstation needs only the SSM parameter
-and target-registration statements.
-
-### The sudoers rule
-
-The menu bar toggles the tunnel through one `NOPASSWD` grant, scoped to two
-exact command lines:
+The menu bar moves the tunnel through one `NOPASSWD` rule, scoped to two exact
+command lines:
 
 ```
 <user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper tunnel up wg0, \
                             /Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper tunnel down wg0
 ```
 
-The path matters as much as the arguments. An earlier version of this rule
-pointed at `/opt/homebrew/bin/wg-quick`; Homebrew owns that directory as the
-logged-in user, mode 775, so the very account the rule named could replace the
-file and become root without a password. `/Library/PrivilegedHelperTools` is
-root-owned and is not somewhere a package manager takes ownership of.
+The path matters as much as the arguments. An earlier version pointed at
+`/opt/homebrew/bin/wg-quick`; Homebrew owns that directory as the logged-in user,
+mode 775, so the very account the rule named could replace the file and become
+root. `/Library/PrivilegedHelperTools` is root-owned and is not somewhere a
+package manager takes ownership of.
 
 The rule's remaining safety condition is that `/etc/wireguard/wg0.conf` stays
-root-owned and mode 0600, because it names the key the helper loads and the peer
-it trusts.
+root-owned and mode 0600, because it names the key the helper loads.
+
+---
+
+# For maintainers
 
 ## Layout
 
 | Path | What it is |
 | --- | --- |
-| `infra/cloudformation-xprem-onprem-vpn.yaml` | the AWS side: NLB, TLS listener, ACM certificate, gateway group, alarms |
-| `cmd/wiregard-mini-vpn` | the installer, the uninstaller, the tunnel and the supervisor |
+| `infra/cloudformation-xprem-onprem-vpn.yaml` | the customer's stack: NLB, TLS, gateway group, alarms |
+| `infra/cloudformation-updates.yaml` | the vendor's stack: S3 and CloudFront for the update feed |
+| `infra/cloudformation-site.yaml` | the vendor's stack: the product website |
+| `cmd/wiregard-mini-vpn` | installer, uninstaller, tunnel, supervisor |
 | `cmd/build-pkg` | builds, signs and notarizes the `.pkg` |
-| `cmd/fetch-wireguard` | fetches and builds the pinned `wireguard-go` |
-| `cmd/fetch-sparkle` | fetches the pinned Sparkle framework and its signing tools |
-| `cmd/appcast` | builds and checks the Sparkle update feed |
-| `cmd/publish` | deploys the feed's infrastructure and publishes a release to it |
-| `infra/cloudformation-updates.yaml` | the vendor's S3 bucket and CloudFront distribution |
+| `cmd/fetch-wireguard`, `cmd/fetch-sparkle` | pinned third-party binaries |
+| `cmd/appcast`, `cmd/publish` | builds, checks and publishes a release |
 | `internal/awsops` | every AWS call, through the SDK |
-| `internal/tunnel` | the WireGuard interface: keys, config, UAPI, routes |
+| `internal/tunnel` | keys, config, UAPI, routes |
 | `internal/setup` | what to ask, what to write, what to verify |
 | `menubar/` | the status bar app and its setup window |
 | `docs/deploy-policy.json` | least-privilege IAM policy for the installer |
@@ -278,57 +331,66 @@ make pkg-notarized PROFILE=wiregard   # signs, notarizes, staples
 
 Everything ships universal — `arm64` and `x86_64` — and the build refuses to
 package a binary that is not, because a single-slice bundle installs cleanly and
-then fails to launch on the other half of the Macs it reaches.
+then fails to launch on half the Macs it reaches.
 
 Signing needs two certificates, both created under Xcode › Settings › Accounts ›
 Manage Certificates, and both requiring the Account Holder role:
 
 | Certificate | Signs |
 | --- | --- |
-| Developer ID Application | `XpremVpn.app`, the engine and `wireguard-go` |
+| Developer ID Application | the app, the engine, `wireguard-go`, Sparkle |
 | Developer ID Installer | the `.pkg` |
 
-An **Apple Distribution** certificate is not a substitute — that one is for the
-App Store, and Gatekeeper rejects it for a direct download. Without these,
-`make pkg` still produces a working package and says what is missing.
+An **Apple Distribution** certificate is not a substitute — that is for the App
+Store, and Gatekeeper rejects it for a direct download.
 
-Notarization credentials are stored once:
+## Releasing
 
 ```sh
-xcrun notarytool store-credentials wiregard \
-  --apple-id <apple-id> --team-id <team-id> --password <app-specific-password>
+make sparkle-keys                     # once, ever. Back the private half up
+make feed-setup FEED_BUCKET=<name> FEED_DOMAIN=<hostname>   # once
+make release PROFILE=wiregard \
+     APPCAST_FEED_URL=https://<hostname>/appcast.xml \
+     SPARKLE_PUBLIC_KEY=<the public half> \
+     APPCAST_BASE_URL=https://<hostname>/releases
 ```
 
-## Running cost
+`make release` runs the checks, notarizes, writes and signs the feed, uploads
+both, invalidates the cache, and then reads the feed back over its public URL —
+because everything before that proves what was uploaded, and only that proves
+what will be served.
 
-Roughly USD 26/month in the customer's account: NLB about 16 plus LCUs, a
-`t4g.micro` gateway about 6, and an Elastic IP about 3.60. Alarms and the SNS
-topic are only created when an address is given to notify.
+Two things worth knowing:
+
+- **`CFBundleVersion` is the release number, not the commit.** Sparkle compares
+  it, and a git hash does not order. The commit is in `XpremBuildCommit`.
+- **Losing the Sparkle private key is unrecoverable.** No installed copy could
+  ever be updated again. Export it and keep it somewhere durable:
+  `./third_party/sparkle/bin/generate_keys -x sparkle-private-key.txt`
 
 ## Licence
 
-GPL-3.0-or-later; the full text is in `LICENSE`, and every source file carries
-an SPDX header. Third-party components and their licences are listed in
-`THIRD-PARTY-NOTICES.md` — all of them are GPLv3-compatible.
+GPL-3.0-or-later; see [`LICENSE`](LICENSE). Every source file carries an SPDX
+header. Third-party components are listed in
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md); all are GPLv3-compatible.
 
-Two consequences worth knowing before distributing a build:
-
-- **Anyone you give a binary to may have the source, and may pass both on.**
-  That is the licence working as intended, not a loophole. If the business
-  model depends on customers not being able to redistribute, GPLv3 is the wrong
-  choice and this is the moment to change it.
-- **The App Store is closed to this.** Apple's terms impose usage restrictions
-  the GPL forbids, which is why GPL apps get pulled from it. Direct download
-  with a Developer ID — what this repository builds — is unaffected.
+Distributing a build means the recipient may have the source and may pass both
+on. If the business depends on customers not redistributing, GPLv3 is the wrong
+licence and that decision should be revisited before the first sale. The App
+Store is closed to GPL software; direct download with a Developer ID, which is
+what this builds, is unaffected.
 
 ## Known limits
 
-- The gateway is one instance at a time. It is an Auto Scaling group of one
-  across every available zone, and a replacement claims the Elastic IP, rewrites
-  the VPN route and reads its WireGuard identity back out of SSM — so a failure
-  is self-healing rather than permanent — but a replacement still takes a few
-  minutes during which the hostname is dark.
+- The gateway is one instance at a time. It repairs itself, but a replacement
+  takes a few minutes during which the hostname is dark.
 - macOS only. There is no Windows or Linux client.
-- The stack claims one hostname. Two deployments in one account need different
-  `--domain` and `--stack` values; everything they own is namespaced by stack
-  name, including the SSM parameters.
+- One hostname per stack. A second deployment needs its own `--domain` and
+  `--stack`; everything it owns is namespaced by stack name.
+
+## Contributing
+
+Patches welcome — <xpremvpn@maragato.ca>.
+
+`make check` is the gate: `go vet`, `gofmt`, the tests, and `cfn-lint` over both
+templates. CI runs the same plus a universal-slice check and `govulncheck`.
