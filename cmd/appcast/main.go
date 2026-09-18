@@ -33,6 +33,7 @@
 package main
 
 import (
+	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/xml"
@@ -123,10 +124,21 @@ func main() {
 	}
 
 	// Sparkle installs a package update by running it, and expects it inside an
-	// archive rather than bare.
+	// archive rather than bare — at the archive's root, not in a directory.
+	//
+	// `ditto --keepParent` on an absolute path keeps the *parent directory*, so
+	// archiving build/XpremVpn-1.0.1.pkg produced a zip containing
+	// build/XpremVpn-1.0.1.pkg. The package is staged alone in a directory and
+	// that directory's contents are archived instead, which puts it where it
+	// belongs.
 	step("Packing %s", filepath.Base(packagePath))
 	must(os.RemoveAll(archivePath))
-	runIn(buildDir, "ditto", "-c", "-k", "--keepParent", packagePath, archivePath)
+
+	staging, err := os.MkdirTemp("", "release-")
+	must(err)
+	defer os.RemoveAll(staging)
+	runIn(buildDir, "cp", packagePath, filepath.Join(staging, filepath.Base(packagePath)))
+	runIn(buildDir, "ditto", "-c", "-k", staging, archivePath)
 	done("%s", filepath.Base(archivePath))
 
 	step("Signing the archive")
@@ -368,10 +380,47 @@ func validate(root, feedPath, buildDir, version string) {
 		warn("with %s. Verify a release cut on a machine that holds the key.", filepath.Base(signingKey))
 	}
 
+	checkArchiveLayout(archivePath)
+
 	digest := sha256Of(archivePath)
 	done("sha256 %s", digest[:16])
 
 	checkTheAppWillAsk(root)
+}
+
+// checkArchiveLayout insists the package sits at the archive's root.
+//
+// Sparkle looks for it there. An archive with the package one directory down
+// downloads perfectly, verifies its signature perfectly, and then fails to
+// install — the worst shape of failure, because everything up to the last step
+// reports success.
+func checkArchiveLayout(archivePath string) {
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		fail("%s cannot be read as a zip: %v", filepath.Base(archivePath), err)
+	}
+	defer reader.Close()
+
+	var packages []string
+	for _, file := range reader.File {
+		name := file.Name
+		// Directory entries and the metadata ditto adds are not the payload.
+		if strings.HasSuffix(name, "/") || strings.HasPrefix(name, "__MACOSX/") {
+			continue
+		}
+		if strings.HasSuffix(name, ".pkg") {
+			packages = append(packages, name)
+		}
+	}
+
+	if len(packages) != 1 {
+		fail("the archive holds %d packages; Sparkle installs exactly one: %v", len(packages), packages)
+	}
+	if strings.Contains(packages[0], "/") {
+		fail("the archive holds the package at %q rather than at its root.\n\n"+
+			"  Sparkle would download it, verify it, and then fail to install it.", packages[0])
+	}
+	done("the archive holds %s at its root", packages[0])
 }
 
 // checkTheAppWillAsk catches the failure that produces no error anywhere: a
