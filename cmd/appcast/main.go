@@ -108,7 +108,11 @@ func main() {
 	}
 	trimmed := strings.TrimSuffix(*baseURL, "/")
 	if *feedURL == "" {
-		*feedURL = trimmed + "/appcast.xml"
+		// Read from the built app rather than derived from --base-url. The two
+		// are not the same path: the archives live under a prefix and the feed
+		// sits at the root, so deriving one from the other printed instructions
+		// that would have published the feed where nothing reads it.
+		*feedURL = feedURLFromBundle(root)
 	}
 
 	if !exists(packagePath) {
@@ -153,9 +157,42 @@ func main() {
 	fmt.Printf("\n✓ %s\n", feedPath)
 	fmt.Printf("\n  Publish both, keeping the names:\n")
 	fmt.Printf("    %s  ->  %s\n", filepath.Base(archivePath), trimmed+"/"+filepath.Base(archivePath))
-	fmt.Printf("    %s            ->  %s\n", "appcast.xml", *feedURL)
+	if *feedURL == "" {
+		warn("The built app carries no SUFeedURL, so where to publish the feed is unknown.")
+	} else {
+		fmt.Printf("    %s            ->  %s\n", "appcast.xml", *feedURL)
+	}
 	fmt.Printf("\n  The app must already carry SUFeedURL = %s and the matching\n", *feedURL)
 	fmt.Printf("  SUPublicEDKey, or no installed copy will ever ask.\n")
+}
+
+// feedURLFromBundle reads SUFeedURL out of the app that is being released. That
+// string is the only authority on where the feed has to be published: it is
+// compiled into every copy shipped, and anything else is a guess about it.
+func feedURLFromBundle(root string) string {
+	plist := filepath.Join(root, "menubar", "build", "XpremVpn.app", "Contents", "Info.plist")
+	content, err := os.ReadFile(plist)
+	if err != nil {
+		return ""
+	}
+
+	text := string(content)
+	marker := "<key>SUFeedURL</key>"
+	start := strings.Index(text, marker)
+	if start < 0 {
+		return ""
+	}
+	rest := text[start+len(marker):]
+	open := strings.Index(rest, "<string>")
+	if open < 0 {
+		return ""
+	}
+	rest = rest[open+len("<string>"):]
+	end := strings.Index(rest, "</string>")
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(rest[:end])
 }
 
 // --- the feed --------------------------------------------------------------
