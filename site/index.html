@@ -144,22 +144,14 @@
       The menu bar switch is the only thing that decides whether the world can reach you.
     </p>
     <div class="cta">
-      <!-- Re-enable both download buttons — this one and the one in the install
-           steps — after the first `make release`, which is what puts
-           MyMicroTunnel.pkg in the bucket. A link to an object that is not
-           there answers AccessDenied, because the bucket deliberately does not
-           grant ListBucket and S3 will not distinguish "missing" from
-           "forbidden" without it.
       <a class="btn btn-primary" href="https://downloads.maragato.ca/MyMicroTunnel.pkg">Download for macOS</a>
-      -->
-      <a class="btn btn-primary" href="#install">How it installs</a>
+      <a class="btn btn-ghost" href="#install">How it installs</a>
       <a class="btn btn-ghost" href="https://github.com/IceSkatingCoach/MyMicroTunnel">Source on GitHub</a>
       <a class="btn btn-ghost" href="mailto:mymicrotunnel@maragato.ca">mymicrotunnel@maragato.ca</a>
     </div>
     <p class="sub">
-      Universal build for macOS 13 or later, Apple silicon or Intel. Free software under
-      the GPL — the AWS bill is the only thing it costs. <strong>No installer is published
-      yet</strong>; build it from source in the meantime.
+      Universal build, signed and notarized. macOS 13 or later, Apple silicon or Intel.
+      Free software under the GPL — the AWS bill is the only thing it costs.
     </p>
   </div>
 
@@ -302,16 +294,11 @@
            finds it on its own; it only has to exist.</p>
       </li>
       <li>
-        <h3>Build and open the installer</h3>
-        <!-- Restore this with the hero button after the first release:
+        <h3>Download and open the installer</h3>
         <p><a class="btn btn-primary" href="https://downloads.maragato.ca/MyMicroTunnel.pkg">Download MyMicroTunnel.pkg</a></p>
-        -->
-        <p>No signed package is published yet. Until there is one, clone the repository
-           and run <code>make pkg</code>, which produces
-           <code>build/MyMicroTunnel-&lt;version&gt;.pkg</code>.</p>
-        <p>It places the app, a command-line tool, the privileged helper and the tunnel,
-           then opens the setup window by itself. Once a release is published the app
-           updates itself, so the installer is only ever needed once.</p>
+        <p>Signed and notarized. It places the app, a command-line tool, the privileged
+           helper and the tunnel, then opens the setup window by itself. The app updates
+           itself from then on, so this link is only ever needed once.</p>
       </li>
       <li>
         <h3>Answer six questions</h3>

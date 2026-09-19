@@ -38,7 +38,12 @@ import (
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
 )
 
-const defaultStackName = "mymicrotunnel-updates"
+// The stack keeps the name it was created with. A CloudFormation stack cannot
+// be renamed, and recreating this one means recreating the distribution that
+// owns downloads.maragato.ca — the hostname compiled into every copy ever
+// shipped, which no second distribution may claim while the first one holds
+// it. The product's name changed; this string is an address, not a name.
+const defaultStackName = "xprem-vpn-updates"
 
 func main() {
 	setup := flag.Bool("setup", false, "deploy or update the feed's own infrastructure and exit")

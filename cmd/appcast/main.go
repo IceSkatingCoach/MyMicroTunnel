@@ -227,7 +227,19 @@ func stageAndPack(buildDir, packagePath, archivePath string) {
 	defer os.RemoveAll(staging)
 
 	runIn(buildDir, "cp", packagePath, filepath.Join(staging, filepath.Base(packagePath)))
-	runIn(buildDir, "ditto", "-c", "-k", staging, archivePath)
+
+	// --norsrc --noextattr, or the archive gets a second "package".
+	//
+	// ditto stores extended attributes as an AppleDouble ._ sidecar, and macOS
+	// attaches attributes to a file merely for being opened: double-clicking
+	// the package to try it adds com.apple.lastuseddate#PS and com.apple.macl.
+	// The next pack then produced ._MyMicroTunnel-1.1.0.pkg beside the real
+	// one, and Sparkle installs an archive holding exactly one package. The
+	// check below caught it, which is the only reason it was not published.
+	//
+	// Nothing in the package needs those attributes: the notarization ticket
+	// is stapled inside the package file itself, not into an attribute.
+	runIn(buildDir, "ditto", "-c", "-k", "--norsrc", "--noextattr", staging, archivePath)
 }
 
 // fetchPublished downloads a release that is already on the feed's own CDN.
