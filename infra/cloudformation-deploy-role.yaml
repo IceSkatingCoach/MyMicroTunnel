@@ -27,8 +27,26 @@ Parameters:
   UserName:
     Type: String
     Default: mymicrotunnel-deploy
-    Description: Name for the IAM user the installer will authenticate as
+    Description: Name for the IAM user that bootstraps the install
     AllowedPattern: '^[\w+=,.@-]+$'
+
+  AppUserName:
+    Type: String
+    Default: mymicrotunnel-app
+    Description: >-
+      Name for the IAM user the app authenticates as from then on. The
+      credentials you type during setup are used once, to mint a key for this
+      user; the app never sees yours again.
+    AllowedPattern: '^[\w+=,.@-]+$'
+
+  StackNamePrefix:
+    Type: String
+    Default: mymicrotunnel-
+    Description: >-
+      The app may only touch CloudFormation stacks whose name starts with
+      this. It creates one per VPN profile and deletes it when the profile
+      goes, so it needs create and delete — bounded to the deployments it
+      made rather than to every stack in the account.
 
 Resources:
   DeployPolicy:
@@ -58,7 +76,17 @@ Resources:
               - ec2:DescribeLaunchTemplateVersions
               - ec2:DescribeTags
             Resource: "*"
-          - Sid: DeployTheStack
+          # Reading a template's parameters takes no stack, so it cannot be
+          # scoped to one.
+          - Sid: ReadATemplate
+            Effect: Allow
+            Action: cloudformation:GetTemplateSummary
+            Resource: "*"
+          # Everything that acts on a stack is bounded by name. The app makes
+          # one stack per VPN profile and deletes it with the profile, so it
+          # needs both — and must not be able to delete a stack it did not
+          # make. Nothing here can reach a stack called anything else.
+          - Sid: DeployAndDeleteOurOwnStacks
             Effect: Allow
             Action:
               - cloudformation:CreateChangeSet
@@ -69,8 +97,18 @@ Resources:
               - cloudformation:DescribeStackEvents
               - cloudformation:DescribeStackResource
               - cloudformation:DescribeStackResources
-              - cloudformation:GetTemplateSummary
               - cloudformation:DeleteStack
+            Resource:
+              - !Sub 'arn:aws:cloudformation:*:${AWS::AccountId}:stack/${StackNamePrefix}*/*'
+              - !Sub 'arn:aws:cloudformation:*:${AWS::AccountId}:stack/${StackNamePrefix}*'
+              - !Sub 'arn:aws:cloudformation:*:${AWS::AccountId}:changeSet/*'
+          # DescribeStacks with no name at all lists them, which is how a
+          # deployment is found again when the local record of it is gone.
+          - Sid: ListStacks
+            Effect: Allow
+            Action:
+              - cloudformation:ListStacks
+              - cloudformation:DescribeStacks
             Resource: "*"
           - Sid: TheResourcesTheStackCreates
             Effect: Allow
@@ -224,9 +262,50 @@ Resources:
       UserName: !Ref UserName
       ManagedPolicyArns:
         - !Ref DeployPolicy
+        - !Ref BootstrapPolicy
       Tags:
         - Key: Purpose
-          Value: Installs MyMicroTunnel
+          Value: Bootstraps MyMicroTunnel
+
+  # The identity the app uses once setup is over.
+  #
+  # It carries the same permissions as the identity that installed it, and no
+  # others: in particular it cannot mint credentials — not its own, not
+  # anybody's — so a key taken off a laptop cannot be used to grow itself a
+  # better one.
+  AppUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Ref AppUserName
+      ManagedPolicyArns:
+        - !Ref DeployPolicy
+      Tags:
+        - Key: Purpose
+          Value: Runs MyMicroTunnel
+
+  # The one thing the bootstrap identity can do that the app cannot: create
+  # the app's key. It is used once, during setup, and then the credentials
+  # the human typed are never needed again.
+  #
+  # Scoped to that single user. It cannot create a key for an administrator,
+  # which is what makes handing these credentials to an installer reasonable
+  # in the first place.
+  BootstrapPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub '${UserName}-bootstrap'
+      Description: Lets the installer mint the application user's access key, once
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: MintTheAppsKey
+            Effect: Allow
+            Action:
+              - iam:CreateAccessKey
+              - iam:ListAccessKeys
+              - iam:DeleteAccessKey
+              - iam:GetUser
+            Resource: !GetAtt AppUser.Arn
 
 Outputs:
   UserNameOut:
@@ -239,6 +318,13 @@ Outputs:
       paste the two values into the MyMicroTunnel setup window. The secret is shown
       once and stored nowhere.
     Value: !Sub 'https://console.aws.amazon.com/iam/home#/users/details/${DeployUser}?section=security_credentials'
+
+  AppUserNameOut:
+    Description: >-
+      The identity the app authenticates as after setup. Its access key is
+      created by the installer and kept in the login Keychain; the credentials
+      you typed are not stored.
+    Value: !Ref AppUser
 
   PolicyArn:
     Value: !Ref DeployPolicy

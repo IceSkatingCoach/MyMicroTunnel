@@ -418,6 +418,26 @@ func applyString(typed map[string]bool, name string, value *string, target *stri
 func resolveClient(ctx context.Context, settings *setup.Settings, interactive bool, accessKeyID, secretAccessKey string) *awsops.Client {
 	ui.Step("AWS credentials")
 
+	// The app's own key, when this account has one. Keyed by account id,
+	// which is why it can only be looked up once a deployment has recorded
+	// which account it is in — a first run has no such record and falls
+	// through to whatever the user supplies.
+	//
+	// Typed credentials still win: that is how a revoked or wrong key is
+	// replaced without first working out where the old one is kept.
+	if accessKeyID == "" && settings.AccountID != "" {
+		if stored, err := awsops.LoadAppCredentials(settings.AccountID); err == nil && stored != nil {
+			client, err := awsops.LoadStatic(ctx, stored.AccessKeyID, stored.SecretAccessKey, settings.Region)
+			if err == nil {
+				if identity, err := client.Identity(ctx); err == nil {
+					ui.Done("Authenticated as %s, from the login Keychain", identity)
+					return client
+				}
+			}
+			ui.Warn("The stored application credentials did not work; falling back to %s.", settings.Profile)
+		}
+	}
+
 	if accessKeyID != "" && secretAccessKey != "" {
 		if settings.Profile == "" {
 			settings.Profile = "mymicrotunnel"
@@ -482,6 +502,24 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 		ui.Info("%s signs in through IAM Identity Center; its session will expire.", settings.Profile)
 	}
 	ui.Done("Authenticated as %s", identity)
+
+	// From here on the app authenticates as itself.
+	//
+	// The credential just used belongs to a person. This mints the app's own
+	// — narrower, unattended, and kept in the login Keychain — and the human
+	// one is not read again. An account whose one-click stack predates the
+	// app user simply carries on with what it has.
+	if account, err := client.AccountID(ctx); err == nil {
+		settings.AccountID = account
+		if stored, err := awsops.LoadAppCredentials(account); err == nil && stored != nil {
+			ui.Done("Using the application's own AWS credentials")
+		} else if minted, err := awsops.EnsureAppCredentials(ctx, client, account); err != nil {
+			ui.Warn("Could not create the application's own AWS credentials: %v", err)
+			ui.Info("Carrying on with %s. Re-run setup to try again.", settings.Profile)
+		} else if minted != nil {
+			ui.Done("Created %s and stored its key in the login Keychain", awsops.AppUserName)
+		}
+	}
 
 	// Who the wake role will trust. An assumed-role ARN names a session that
 	// will not exist tomorrow, so it is reduced to the role itself; anything

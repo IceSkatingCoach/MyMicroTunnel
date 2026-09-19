@@ -158,3 +158,54 @@ func TestDeployRoleTemplateOnlyAllows(t *testing.T) {
 		t.Error("the deploy policy contains a Deny; it should only grant")
 	}
 }
+
+// resourceBlock returns one resource's own lines: from its logical id to the
+// next one at the same indentation. Slicing to the end of the file instead
+// picks up every resource defined after it, which is how the first version of
+// the test below reported the app user as carrying a policy that is merely
+// declared underneath it.
+func resourceBlock(template, logicalID string) string {
+	start := strings.Index(template, "\n  "+logicalID+":\n")
+	if start < 0 {
+		return ""
+	}
+	rest := template[start+1:]
+	for offset, line := range strings.Split(rest, "\n")[1:] {
+		if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "   ") &&
+			strings.HasSuffix(strings.TrimSpace(line), ":") {
+			return strings.Join(strings.Split(rest, "\n")[:offset+1], "\n")
+		}
+	}
+	return rest
+}
+
+// The app's identity is the one that runs unattended for years on a laptop,
+// so what it can do matters more than what the installer can.
+func TestTheAppIdentityCanDeployAndDeleteOnlyItsOwnStacks(t *testing.T) {
+	template := deployRoleTemplate(t)
+
+	// It must be able to delete: a VPN profile that is removed takes its
+	// stack with it, and an app that can only create leaves the expensive
+	// half behind for somebody to find on a bill.
+	if !strings.Contains(template, "cloudformation:DeleteStack") {
+		t.Error("the app cannot delete a stack, so removing a profile would leave it running")
+	}
+
+	// And only its own. Scoped by name, because "delete any stack in the
+	// account" is not a permission worth having on a laptop.
+	if !strings.Contains(template, "stack/${StackNamePrefix}*") {
+		t.Error("stack permissions are not scoped to this product's own stacks")
+	}
+
+	// The app must not be able to mint credentials — not even its own. That
+	// grant belongs to the bootstrap identity, which is used once.
+	if strings.Contains(resourceBlock(template, "AppUser"), "BootstrapPolicy") {
+		t.Error("the app user carries the policy that can create access keys")
+	}
+	if !strings.Contains(template, "Sid: MintTheAppsKey") {
+		t.Fatal("nothing can create the app's key, so setup cannot finish")
+	}
+	if !strings.Contains(template, "Resource: !GetAtt AppUser.Arn") {
+		t.Error("the key-minting grant is not scoped to the app user alone")
+	}
+}

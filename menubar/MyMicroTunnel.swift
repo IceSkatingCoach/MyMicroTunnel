@@ -679,25 +679,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             This drops the tunnel and removes the configuration for \(target). \
             The app and the background service go too when it is the last profile left.
 
-            It leaves your private key at /etc/wireguard, and it leaves the AWS \
-            stack running — the hostname will keep answering from any other Mac \
-            registered to it, and will keep costing money.
+            It leaves your private key at /etc/wireguard.
 
-            To remove another profile, or the AWS side too, run this in a terminal instead:
+            "Remove" leaves the AWS stack running: the hostname keeps answering from \
+            any other Mac registered to it, and keeps costing money. "Remove and delete \
+            the AWS stack" takes the deployment down as well.
+
+            To remove a different profile, run this in a terminal instead:
                 mymicrotunnel uninstall --vpn-profile NAME --delete-stack --delete-keys
             """
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Remove")
+        alert.addButton(withTitle: "Remove and delete the AWS stack")
         alert.addButton(withTitle: "Cancel")
 
         NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let answer = alert.runModal()
+        guard answer != .alertThirdButtonReturn else { return }
+
+        // The stack is the part that keeps costing money, so it is worth one
+        // question rather than a paragraph telling people to go and delete it
+        // themselves — which is a thing nobody does. It is a separate button
+        // because it is a separate consequence: the hostname stops answering
+        // for every Mac registered to that deployment, not just this one.
+        let deleteStack = answer == .alertSecondButtonReturn
+        if deleteStack {
+            let confirm = NSAlert()
+            confirm.messageText = "Delete the AWS deployment for \(target)?"
+            confirm.informativeText = """
+                The load balancer, the gateway, the certificate and the DNS record go with it. \
+                Any other Mac serving this hostname stops working, and the name stops resolving.
+
+                This cannot be undone.
+                """
+            confirm.alertStyle = .critical
+            confirm.addButton(withTitle: "Delete it")
+            confirm.addButton(withTitle: "Cancel")
+            guard confirm.runModal() == .alertFirstButtonReturn else { return }
+        }
 
         let helper = profiles.first?.helperPath ?? Tunnel().helperPath
         // Started detached and then this app exits, because the uninstall may
         // remove /Applications/MyMicroTunnel.app — which is to say, the bundle
         // this code is running out of.
-        let command = "\(shellQuote(helper)) uninstall --non-interactive --vpn-profile \(shellQuote(target))"
+        var command = "\(shellQuote(helper)) uninstall --non-interactive --vpn-profile \(shellQuote(target))"
+        if deleteStack {
+            command += " --delete-stack"
+        }
         let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
 
         let process = Process()

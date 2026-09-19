@@ -47,7 +47,13 @@
       "Resource": "*"
     },
     {
-      "Sid": "DeployTheStack",
+      "Sid": "ReadATemplate",
+      "Effect": "Allow",
+      "Action": "cloudformation:GetTemplateSummary",
+      "Resource": "*"
+    },
+    {
+      "Sid": "DeployAndDeleteOurOwnStacks",
       "Effect": "Allow",
       "Action": [
         "cloudformation:CreateChangeSet",
@@ -58,8 +64,20 @@
         "cloudformation:DescribeStackEvents",
         "cloudformation:DescribeStackResource",
         "cloudformation:DescribeStackResources",
-        "cloudformation:GetTemplateSummary",
         "cloudformation:DeleteStack"
+      ],
+      "Resource": [
+        "arn:aws:cloudformation:*:*:stack/mymicrotunnel-*/*",
+        "arn:aws:cloudformation:*:*:stack/mymicrotunnel-*",
+        "arn:aws:cloudformation:*:*:changeSet/*"
+      ]
+    },
+    {
+      "Sid": "ListStacks",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:ListStacks",
+        "cloudformation:DescribeStacks"
       ],
       "Resource": "*"
     },
@@ -236,6 +254,17 @@
         "cloudwatch:UntagResource"
       ],
       "Resource": "*"
+    },
+    {
+      "Sid": "MintTheAppsKey",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateAccessKey",
+        "iam:ListAccessKeys",
+        "iam:DeleteAccessKey",
+        "iam:GetUser"
+      ],
+      "Resource": "arn:aws:iam::*:user/mymicrotunnel-app"
     }
   ]
 }

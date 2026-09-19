@@ -82,6 +82,25 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 	if len(remaining) == 0 {
 		os.RemoveAll(AppConfigDir())
 		ui.Done("App configuration removed")
+
+		// The last profile takes the AWS credentials with it. A machine that
+		// no longer runs this should not keep a working key for an account it
+		// can no longer be asked about — and a key left in a Keychain is
+		// exactly the kind nobody rotates.
+		if settings.AccountID != "" {
+			if stored, err := awsops.LoadAppCredentials(settings.AccountID); err == nil && stored != nil {
+				if client, err := awsops.LoadProfile(ctx, options.Profile, options.Region); err == nil {
+					if err := client.DeleteAppAccessKey(ctx, stored.AccessKeyID); err != nil {
+						ui.Warn("The application's AWS key is still live: %v", err)
+					}
+				}
+				if err := awsops.ForgetAppCredentials(settings.AccountID); err != nil {
+					ui.Warn("Could not remove the stored credentials: %v", err)
+				} else {
+					ui.Done("Application AWS credentials removed from the Keychain")
+				}
+			}
+		}
 	}
 
 	if options.DeleteKeys {
