@@ -127,6 +127,9 @@ site-publish:
 		--stack-name $(SITE_STACK) --query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' --output text))
 	@test -n "$(SITE_BUCKET_NAME)" || (echo "no $(SITE_STACK) stack; run make site-setup first" && false)
 	aws s3 cp site/index.html s3://$(SITE_BUCKET_NAME)/index.html --content-type text/html
+	# Screenshots, when there are any. --size-only so republishing the page
+	# does not re-upload megabytes of unchanged images every time.
+	@test -d site/img && aws s3 sync site/img s3://$(SITE_BUCKET_NAME)/img --size-only || true
 	aws s3 cp infra/cloudformation-deploy-role.yaml s3://$(SITE_BUCKET_NAME)/launch/deploy-role.yaml --content-type text/yaml
 	aws s3 cp infra/cloudformation-deploy-role.yaml s3://$(SITE_BUCKET_NAME)/deploy-role.yaml --content-type text/yaml
 	aws cloudfront create-invalidation --distribution-id $(SITE_DISTRIBUTION) --paths '/*' \

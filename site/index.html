@@ -55,6 +55,17 @@
   .nav a { color: var(--ink-soft); }
 
   .hero { padding: 72px 0 56px; }
+  figure.shot { margin: 28px 0; }
+  figure.shot img {
+    max-width: 100%; height: auto; display: block;
+    border: 1px solid var(--rule); border-radius: 10px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.12);
+  }
+  figure.shot figcaption {
+    margin-top: 10px; font-size: 13px; color: var(--muted);
+  }
+  .shots { display: grid; gap: 28px; grid-template-columns: 1fr; }
+  @media (min-width: 900px) { .shots { grid-template-columns: 1fr 1fr; align-items: start; } }
   h1 { font-size: clamp(32px, 5vw, 46px); line-height: 1.12; letter-spacing: -1px; margin: 0 0 18px; }
   .lede { font-size: 19px; color: var(--ink-soft); max-width: 62ch; margin: 0 0 14px; }
   .sub { font-size: 15px; color: var(--ink-faint); max-width: 62ch; }
@@ -331,6 +342,24 @@
            right now.</p>
       </li>
     </ol>
+
+    <div class="shots">
+      <figure class="shot">
+        <img src="img/setup-window.png" width="856" height="900"
+             alt="The MyMicroTunnel setup window: AWS credentials with a profile and a region
+                  list, then the deployment fields, with a log showing the stack deployed and
+                  the hostname pointed at the load balancer.">
+        <figcaption>Setup. The region is a list of what your account can reach and the stack
+          name fills itself in; the log below is the deploy as it happens.</figcaption>
+      </figure>
+      <figure class="shot">
+        <img src="img/menu-bar.png" width="760" height="568"
+             alt="The MyMicroTunnel menu: a VPN Profiles heading, New VPN Profile, Setup,
+                  Uninstall and Check for Updates.">
+        <figcaption>The menu bar, on a Mac with nothing deployed yet. Each profile you add
+          gets its own block here, with its own switch.</figcaption>
+      </figure>
+    </div>
 
     <h3>Or from a terminal</h3>
 <pre><code>mymicrotunnel install --domain updates.example.com --port 3000
