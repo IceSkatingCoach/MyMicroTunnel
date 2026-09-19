@@ -153,7 +153,21 @@ func stagePayload(root, buildDir, appPath string) string {
 	step("Staging the package payload")
 
 	payloadRoot := filepath.Join(buildDir, "pkgroot")
-	must(os.RemoveAll(payloadRoot))
+
+	// A previous payload is not always this user's to delete. Installing the
+	// package, or running the installer as root from a checkout, can leave a
+	// root-owned copy of the app under build/, and then every later build
+	// fails on "permission denied" for a directory nobody remembers making.
+	//
+	// Staging somewhere new is both the fix and the safer habit: the payload
+	// is then exactly what this run put there, with no chance of shipping a
+	// file left behind by an older one.
+	if err := os.RemoveAll(payloadRoot); err != nil {
+		payloadRoot = filepath.Join(buildDir, fmt.Sprintf("pkgroot-%d", os.Getpid()))
+		warn("%s could not be removed (%v); staging in %s instead",
+			filepath.Join(buildDir, "pkgroot"), err, filepath.Base(payloadRoot))
+		must(os.RemoveAll(payloadRoot))
+	}
 	must(os.MkdirAll(filepath.Join(payloadRoot, "Applications"), 0o755))
 	must(os.MkdirAll(filepath.Join(payloadRoot, supportDir[1:]), 0o755))
 	must(os.MkdirAll(filepath.Join(payloadRoot, "usr/local/bin"), 0o755))
