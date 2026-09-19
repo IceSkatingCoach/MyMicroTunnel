@@ -459,6 +459,23 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 		}
 	}
 
+	// A config that names a key nobody installed is worse than no config:
+	// the tunnel comes up, cannot load a private key, and every symptom
+	// points at the deployment instead of at this. It happens when the
+	// unprivileged stage reused a recorded public key whose private half
+	// lives somewhere this profile does not look — so say exactly that, here,
+	// where it is still true and still fixable.
+	if asRoot && !sys.Exists(keyPath) {
+		if _, err := os.Stat(staged); err != nil {
+			return fmt.Errorf(
+				"there is no private key at %s and none was staged at %s.\n\n"+
+					"  The deployment stage reused a public key it had recorded, so it never\n"+
+					"  generated one. Delete %s and run the deployment stage again; it will\n"+
+					"  mint a fresh key and register it with the gateway.",
+				keyPath, staged, PublicKeyPath(s.ProfileName))
+		}
+	}
+
 	if content, err := os.ReadFile(staged); err == nil {
 		writes = append(writes, struct {
 			content string

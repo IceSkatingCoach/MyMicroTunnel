@@ -65,6 +65,11 @@ func main() {
 		runDiagnose(os.Args[2:])
 	case "version", "--version":
 		fmt.Println(version.String())
+	case "default-stack":
+		// Exists so the setup window can show the name a deploy would choose
+		// instead of leaving the field blank or, worse, inheriting whatever
+		// an older deployment was called.
+		runDefaultStack(os.Args[2:])
 	case "profiles":
 		// Exists so the setup window does not have to parse ~/.aws itself.
 		fmt.Println(strings.Join(awsops.Profiles(), "\n"))
@@ -560,6 +565,35 @@ func runUninstall(args []string) {
 	if !*asJSON {
 		fmt.Println("\n✓ Uninstalled.")
 	}
+}
+
+// runDefaultStack prints the name a deploy would pick for a new deployment in
+// this account and region, and nothing else. It is read by the setup window,
+// so a stray line of prose here would become a stack name.
+func runDefaultStack(args []string) {
+	flags := flag.NewFlagSet("default-stack", flag.ExitOnError)
+	profile := flags.String("profile", "default", "AWS profile")
+	region := flags.String("region", "", "AWS region; taken from the profile when empty")
+	_ = flags.Parse(args)
+
+	ctx := context.Background()
+	resolvedRegion := *region
+	if resolvedRegion == "" {
+		resolvedRegion = awsops.ProfileRegion(ctx, *profile)
+	}
+	if resolvedRegion == "" {
+		return
+	}
+
+	client, err := awsops.LoadProfile(ctx, *profile, resolvedRegion)
+	if err != nil {
+		return
+	}
+	account, err := client.AccountID(ctx)
+	if err != nil {
+		return
+	}
+	fmt.Println(setup.DefaultStackName(account, resolvedRegion))
 }
 
 // runPeers is the operational view of a deployment: which workstations may

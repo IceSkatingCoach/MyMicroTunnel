@@ -106,6 +106,8 @@ final class SetupWindowController: NSWindowController {
         regionField.placeholderString = "taken from the profile when left empty"
         vpnProfilePicker.target = self
         vpnProfilePicker.action = #selector(vpnProfileChanged)
+        regionField.target = self
+        regionField.action = #selector(regionChanged)
         vpnProfileField.stringValue = defaults.vpnProfile
         vpnProfileField.placeholderString = "a name for this deployment, e.g. lab"
         stackField.placeholderString = "microtunnel-<account-id>-<region>"
@@ -303,9 +305,14 @@ final class SetupWindowController: NSWindowController {
             }
             if installed.count > 0 {
                 vpnCidrField.stringValue = suggestedVpnCidr(installed.count)
-                stackField.stringValue = ""
                 domainField.stringValue = ""
             }
+            // A new deployment is named for the account and the region, and
+            // the account is only knowable by asking AWS. Shown rather than
+            // left blank so the name is visible before the deploy, and
+            // editable so it can be overridden.
+            stackField.stringValue = ""
+            showDerivedStackName()
             return
         }
 
@@ -372,11 +379,49 @@ final class SetupWindowController: NSWindowController {
         credentialModeChanged()
     }
 
+    @objc private func regionChanged() {
+        if vpnProfilePicker.titleOfSelectedItem == Self.newProfileTitle {
+            showDerivedStackName()
+        }
+    }
+
+    /// Asks the engine what a deploy would call this stack, and fills the
+    /// field with it.
+    ///
+    /// Off the main thread: it authenticates and calls STS, which on a cold
+    /// SSO session is not instant, and a setup window that freezes while the
+    /// user picks a region is worse than one that fills a field a moment
+    /// late. Whatever has been typed in the meantime wins.
+    private func showDerivedStackName() {
+        let awsProfile = credentialMode.indexOfSelectedItem == 0
+            ? (profileField.titleOfSelectedItem ?? "default")
+            : "default"
+        let region = trimmed(regionField, or: "")
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            var arguments = ["default-stack", "--profile", awsProfile]
+            if !region.isEmpty {
+                arguments += ["--region", region]
+            }
+            let derived = runBinary(arguments).trimmingCharacters(in: .whitespacesAndNewlines)
+
+            DispatchQueue.main.async {
+                guard !derived.isEmpty, self.stackField.stringValue.isEmpty else { return }
+                self.stackField.stringValue = derived
+            }
+        }
+    }
+
     @objc private func credentialModeChanged() {
         let usingProfile = credentialMode.indexOfSelectedItem == 0
         profileField.isHidden = !usingProfile
         accessKeyField.isHidden = usingProfile
         secretKeyField.isHidden = usingProfile
+
+        if vpnProfilePicker.numberOfItems > 0,
+           vpnProfilePicker.titleOfSelectedItem == Self.newProfileTitle {
+            showDerivedStackName()
+        }
     }
 
     // MARK: - Running
