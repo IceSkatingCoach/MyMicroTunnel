@@ -7,6 +7,16 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.3.1
+
+- The setup window's button says **Deploy CloudFormation**, because that is
+  what it does: build a stack in your own AWS account, over several minutes,
+  for money. "Install" undersold it.
+- The log is hidden until there is something in it. An empty console filling a
+  third of the window before anything has run looks like a fault.
+- Setup explains how ports are written, beside the fields that take them:
+  local first, published second.
+
 ## 1.3.0
 
 - Every published port is now written `local:published`. A bare number
