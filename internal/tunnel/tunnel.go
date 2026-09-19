@@ -285,8 +285,8 @@ func engineSearchPath() []string {
 	}
 
 	return append(candidates,
-		"/usr/local/lib/wiregard-mini-vpn/wireguard-go",
-		"/Applications/XpremVpn.app/Contents/Resources/wireguard-go",
+		"/usr/local/lib/mymicrotunnel/wireguard-go",
+		"/Applications/MyMicroTunnel.app/Contents/Resources/wireguard-go",
 	)
 }
 

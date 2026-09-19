@@ -48,7 +48,7 @@ func TestWriteProfileLeavesEveryOtherSectionAlone(t *testing.T) {
 		"[default]\naws_access_key_id = KEEP\naws_secret_access_key = KEEPSECRET\n\n"+
 			"[other]\naws_access_key_id = ALSOKEEP\n")
 
-	if err := WriteProfile("xprem-vpn", "NEWKEY", "NEWSECRET", "us-east-2"); err != nil {
+	if err := WriteProfile("mymicrotunnel", "NEWKEY", "NEWSECRET", "us-east-2"); err != nil {
 		t.Fatalf("writing the profile: %v", err)
 	}
 
@@ -65,7 +65,7 @@ func TestWriteProfileLeavesEveryOtherSectionAlone(t *testing.T) {
 			t.Errorf("%q did not survive the write:\n%s", expected, written)
 		}
 	}
-	for _, expected := range []string{"[xprem-vpn]", "NEWKEY", "NEWSECRET", "region = us-east-2"} {
+	for _, expected := range []string{"[mymicrotunnel]", "NEWKEY", "NEWSECRET", "region = us-east-2"} {
 		if !strings.Contains(written, expected) {
 			t.Errorf("the new profile has no %q:\n%s", expected, written)
 		}
@@ -76,10 +76,10 @@ func TestWriteProfileReplacesRatherThanDuplicates(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	if err := WriteProfile("xprem-vpn", "FIRST", "FIRSTSECRET", "us-east-1"); err != nil {
+	if err := WriteProfile("mymicrotunnel", "FIRST", "FIRSTSECRET", "us-east-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteProfile("xprem-vpn", "SECOND", "SECONDSECRET", "us-east-2"); err != nil {
+	if err := WriteProfile("mymicrotunnel", "SECOND", "SECONDSECRET", "us-east-2"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,8 +89,8 @@ func TestWriteProfileReplacesRatherThanDuplicates(t *testing.T) {
 	}
 	written := string(content)
 
-	if strings.Count(written, "[xprem-vpn]") != 1 {
-		t.Errorf("the profile appears %d times:\n%s", strings.Count(written, "[xprem-vpn]"), written)
+	if strings.Count(written, "[mymicrotunnel]") != 1 {
+		t.Errorf("the profile appears %d times:\n%s", strings.Count(written, "[mymicrotunnel]"), written)
 	}
 	// A stale key left above the new one is the one the SDK reads.
 	if strings.Contains(written, "FIRSTSECRET") {
@@ -105,7 +105,7 @@ func TestWriteProfileKeepsTheFilePrivate(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	if err := WriteProfile("xprem-vpn", "KEY", "SECRET", "us-east-1"); err != nil {
+	if err := WriteProfile("mymicrotunnel", "KEY", "SECRET", "us-east-1"); err != nil {
 		t.Fatal(err)
 	}
 

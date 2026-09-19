@@ -83,7 +83,7 @@ func Exists(path string) bool {
 // step that writes it. A file holding a private key never exists readable, not
 // even briefly.
 func WriteAsRoot(content, destination, mode string) error {
-	scratch, err := os.MkdirTemp("", "wiregard-")
+	scratch, err := os.MkdirTemp("", "microtunnel-")
 	if err != nil {
 		return err
 	}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Command appcast builds and checks the Sparkle update feed.
 //
-//	go run ./cmd/appcast --base-url https://downloads.example.com/xpremvpn
+//	go run ./cmd/appcast --base-url https://downloads.example.com/mymicrotunnel
 //	go run ./cmd/appcast --validate
 //
 // WHAT SPARKLE NEEDS, AND WHAT IT DOES NOT
@@ -73,8 +73,8 @@ const (
 	// than no update.
 	minimumSystemVersion = "13.0"
 
-	feedTitle       = "Xprem VPN"
-	feedDescription = "Updates for Xprem VPN"
+	feedTitle       = "MyMicroTunnel"
+	feedDescription = "Updates for MyMicroTunnel"
 )
 
 func main() {
@@ -97,8 +97,8 @@ func main() {
 		version = *rollback
 	}
 	buildDir := filepath.Join(root, "build")
-	packagePath := filepath.Join(buildDir, fmt.Sprintf("XpremVpn-%s.pkg", version))
-	archivePath := filepath.Join(buildDir, fmt.Sprintf("XpremVpn-%s.zip", version))
+	packagePath := filepath.Join(buildDir, fmt.Sprintf("MyMicroTunnel-%s.pkg", version))
+	archivePath := filepath.Join(buildDir, fmt.Sprintf("MyMicroTunnel-%s.zip", version))
 	feedPath := filepath.Join(buildDir, "appcast.xml")
 
 	if *validateOnly {
@@ -111,7 +111,7 @@ func main() {
 			"  The feed has to say where the archive can be downloaded, and there is no\n" +
 			"  sensible default for that: it is wherever you host releases. Pass it, or\n" +
 			"  set APPCAST_BASE_URL:\n\n" +
-			"      go run ./cmd/appcast --base-url https://downloads.example.com/xpremvpn\n\n" +
+			"      go run ./cmd/appcast --base-url https://downloads.example.com/mymicrotunnel\n\n" +
 			"  The same value goes into the app as SUFeedURL; see menubar/Info.plist.")
 	}
 	trimmed := strings.TrimSuffix(*baseURL, "/")
@@ -141,8 +141,8 @@ func main() {
 	// archive rather than bare — at the archive's root, not in a directory.
 	//
 	// `ditto --keepParent` on an absolute path keeps the *parent directory*, so
-	// archiving build/XpremVpn-1.0.1.pkg produced a zip containing
-	// build/XpremVpn-1.0.1.pkg. The package is staged alone in a directory and
+	// archiving build/MyMicroTunnel-1.0.1.pkg produced a zip containing
+	// build/MyMicroTunnel-1.0.1.pkg. The package is staged alone in a directory and
 	// that directory's contents are archived instead, which puts it where it
 	// belongs.
 	if *rollback == "" {
@@ -193,7 +193,7 @@ func main() {
 // string is the only authority on where the feed has to be published: it is
 // compiled into every copy shipped, and anything else is a guess about it.
 func feedURLFromBundle(root string) string {
-	plist := filepath.Join(root, "menubar", "build", "XpremVpn.app", "Contents", "Info.plist")
+	plist := filepath.Join(root, "menubar", "build", "MyMicroTunnel.app", "Contents", "Info.plist")
 	content, err := os.ReadFile(plist)
 	if err != nil {
 		return ""
@@ -237,7 +237,7 @@ func stageAndPack(buildDir, packagePath, archivePath string) {
 // from there rather than rebuilding locally means the rollback is signed over
 // the exact bytes being served — and fails loudly if those bytes have gone.
 func fetchPublished(baseURL, version, archivePath string) {
-	url := baseURL + "/XpremVpn-" + version + ".zip"
+	url := baseURL + "/MyMicroTunnel-" + version + ".zip"
 	step("Fetching the published %s", version)
 
 	client := &http.Client{Timeout: 10 * time.Minute}
@@ -485,7 +485,7 @@ func checkTheAppWillAsk(root string) {
 	// The built bundle, not the source template: the keys are added at build
 	// time from APPCAST_FEED_URL and SPARKLE_PUBLIC_KEY, so the source file
 	// never has them and checking it would always fail.
-	plist := filepath.Join(root, "menubar", "build", "XpremVpn.app", "Contents", "Info.plist")
+	plist := filepath.Join(root, "menubar", "build", "MyMicroTunnel.app", "Contents", "Info.plist")
 	content, err := os.ReadFile(plist)
 	if err != nil {
 		warn("Could not read %s", plist)

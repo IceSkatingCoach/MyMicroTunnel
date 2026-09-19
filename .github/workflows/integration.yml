@@ -38,7 +38,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  STACK: xprem-ci-${{ github.run_id }}
+  STACK: microtunnel-ci-${{ github.run_id }}
   AWS_REGION: us-east-2
 
 jobs:
@@ -83,10 +83,10 @@ jobs:
         env:
           DOMAIN: ${{ secrets.AWS_INTEGRATION_DOMAIN }}
         run: |
-          go build -o wiregard-mini-vpn ./cmd/wiregard-mini-vpn
+          go build -o mymicrotunnel ./cmd/mymicrotunnel
           # --stage deploy is the half that needs only AWS credentials: no root,
           # no Mac, no tunnel. That is exactly the half CI can exercise.
-          ./wiregard-mini-vpn install \
+          ./mymicrotunnel install \
             --stage deploy \
             --non-interactive \
             --profile default \

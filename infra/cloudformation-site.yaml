@@ -25,7 +25,7 @@ Parameters:
 
   DomainName:
     Type: String
-    Description: Hostname to serve the site from, for example xpremvpn.example.com
+    Description: Hostname to serve the site from, for example mymicrotunnel.example.com
 
   HostedZoneId:
     Type: String
@@ -194,5 +194,5 @@ Outputs:
       One-click link that creates the installer's IAM identity in whichever
       account the person following it is signed into.
     Value: !Sub
-      - 'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2F${BucketName}.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=xprem-vpn-deploy-role'
+      - 'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2F${BucketName}.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role'
       - BucketName: !Ref BucketName

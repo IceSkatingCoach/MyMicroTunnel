@@ -24,16 +24,16 @@ import (
 )
 
 const (
-	appName    = "XpremVpn.app"
-	bundleID   = "ca.maragato.xprem.vpn"
-	supportDir = "/usr/local/lib/wiregard-mini-vpn"
+	appName    = "MyMicroTunnel.app"
+	bundleID   = "ca.maragato.mymicrotunnel"
+	supportDir = "/usr/local/lib/mymicrotunnel"
 
 	// The copy the sudoers rule names. Separate from the one on the path
 	// because /usr/local/bin is a directory Homebrew takes ownership of on
 	// Intel, and a NOPASSWD rule pointing at a user-writable file is a
 	// password-free root shell. See internal/setup.HelperPath.
 	helperDir  = "/Library/PrivilegedHelperTools"
-	helperName = "ca.maragato.xprem.vpn.helper"
+	helperName = "ca.maragato.mymicrotunnel.helper"
 )
 
 var identityPattern = regexp.MustCompile(`"([^"]+)"`)
@@ -49,17 +49,17 @@ func main() {
 	// into the binary and into the bundle's Info.plist.
 	os.Setenv("VERSION", version)
 
-	fmt.Printf("Building XpremVpn %s\n", version)
+	fmt.Printf("Building MyMicroTunnel %s\n", version)
 	must(os.MkdirAll(buildDir, 0o755))
 
 	buildApp(root)
 
 	appPath := filepath.Join(root, "menubar", "build", appName)
 	resources := filepath.Join(appPath, "Contents", "Resources")
-	enginePath := filepath.Join(resources, "wiregard-mini-vpn")
+	enginePath := filepath.Join(resources, "mymicrotunnel")
 	wireguardPath := filepath.Join(resources, "wireguard-go")
 	verifyUniversal(
-		filepath.Join(appPath, "Contents", "MacOS", "XpremVpn"),
+		filepath.Join(appPath, "Contents", "MacOS", "MyMicroTunnel"),
 		enginePath,
 		wireguardPath,
 	)
@@ -170,8 +170,8 @@ func stagePayload(root, buildDir, appPath string) string {
 	// the bundle is what makes the app self-contained. All three are the same
 	// signed build, so a terminal install and a setup-window install run
 	// identical code.
-	engine := filepath.Join(resources, "wiregard-mini-vpn")
-	copyFile(engine, filepath.Join(payloadRoot, "usr/local/bin/wiregard-mini-vpn"), 0o755)
+	engine := filepath.Join(resources, "mymicrotunnel")
+	copyFile(engine, filepath.Join(payloadRoot, "usr/local/bin/mymicrotunnel"), 0o755)
 	copyFile(engine, filepath.Join(payloadRoot, helperDir[1:], helperName), 0o755)
 
 	// wireguard-go outside the bundle too, so the helper and the supervisor
@@ -184,9 +184,9 @@ func stagePayload(root, buildDir, appPath string) string {
 
 	must(os.WriteFile(
 		filepath.Join(payloadRoot, supportDir[1:], "README"),
-		[]byte("Installed by wiregard_mini_vpn.\n\n"+
+		[]byte("Installed by MyMicroTunnel.\n\n"+
 			"The CloudFormation template is embedded in the binary; run\n"+
-			"`wiregard-mini-vpn install --domain <hostname>` to deploy.\n\n"+
+			"`mymicrotunnel install --domain <hostname>` to deploy.\n\n"+
 			"wireguard-go beside this file is MIT-licensed and unmodified except for\n"+
 			"a dependency upgrade needed to build it with a current Go; see\n"+
 			"cmd/fetch-wireguard in the source for the exact versions.\n"),
@@ -201,7 +201,7 @@ func stagePayload(root, buildDir, appPath string) string {
 		warn("Could not clear extended attributes: %s", result.output)
 	}
 
-	done("/Applications/%s, %s, %s/%s", appName, "/usr/local/bin/wiregard-mini-vpn", helperDir, helperName)
+	done("/Applications/%s, %s, %s/%s", appName, "/usr/local/bin/mymicrotunnel", helperDir, helperName)
 	return payloadRoot
 }
 
@@ -219,7 +219,7 @@ consoleUser=$(/usr/bin/stat -f%Su /dev/console)
 if [ "$consoleUser" != "root" ] && [ -n "$consoleUser" ]; then
   uid=$(/usr/bin/id -u "$consoleUser")
   /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$consoleUser" \
-    /usr/bin/open -a /Applications/XpremVpn.app
+    /usr/bin/open -a /Applications/MyMicroTunnel.app
 fi
 exit 0
 `
@@ -255,7 +255,7 @@ func buildProduct(buildDir, version string, appSigned bool) string {
 	distribution := strings.Join([]string{
 		`<?xml version="1.0" encoding="utf-8"?>`,
 		`<installer-gui-script minSpecVersion="2">`,
-		`  <title>Xprem Mini VPN</title>`,
+		`  <title>MyMicroTunnel Mini VPN</title>`,
 		`  <options customize="never" require-scripts="false" hostArchitectures="arm64,x86_64"/>`,
 		`  <volume-check>`,
 		`    <allowed-os-versions><os-version min="13.0"/></allowed-os-versions>`,
@@ -269,9 +269,9 @@ func buildProduct(buildDir, version string, appSigned bool) string {
 		`  </choice>`,
 		fmt.Sprintf(`  <pkg-ref id="%s" version="%s" onConclusion="none">component.pkg</pkg-ref>`, bundleID, version),
 		`  <conclusion-text>`,
-		`    Xprem VPN is installed. Its setup window opens automatically and walks`,
+		`    MyMicroTunnel is installed. Its setup window opens automatically and walks`,
 		`    through deploying the AWS side. You can reopen it later from the menu`,
-		`    bar icon, or run: wiregard-mini-vpn`,
+		`    bar icon, or run: mymicrotunnel`,
 		`  </conclusion-text>`,
 		`</installer-gui-script>`,
 		"",
@@ -280,7 +280,7 @@ func buildProduct(buildDir, version string, appSigned bool) string {
 	distributionPath := filepath.Join(buildDir, "distribution.xml")
 	must(os.WriteFile(distributionPath, []byte(distribution), 0o644))
 
-	output := filepath.Join(buildDir, fmt.Sprintf("XpremVpn-%s.pkg", version))
+	output := filepath.Join(buildDir, fmt.Sprintf("MyMicroTunnel-%s.pkg", version))
 	must(os.RemoveAll(output))
 
 	arguments := []string{

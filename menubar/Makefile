@@ -1,11 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-APP    := XpremVpn.app
+APP    := MyMicroTunnel.app
 DEST   := build/$(APP)
-BIN    := $(DEST)/Contents/MacOS/XpremVpn
-ENGINE := $(DEST)/Contents/Resources/wiregard-mini-vpn
+BIN    := $(DEST)/Contents/MacOS/MyMicroTunnel
+ENGINE := $(DEST)/Contents/Resources/mymicrotunnel
 WGGO   := $(DEST)/Contents/Resources/wireguard-go
 
-SOURCES := XpremVpn.swift SetupWindow.swift
+SOURCES := MyMicroTunnel.swift SetupWindow.swift
 
 SPARKLE  := ../third_party/sparkle
 # Set both to build an app that can update itself. Left empty, the app builds
@@ -32,17 +32,17 @@ app: engine
 	swiftc -O -parse-as-library -target arm64-apple-macos13 \
 		-F $(SPARKLE) -framework Sparkle \
 		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-		-o build/slices/XpremVpn.arm64 $(SOURCES)
+		-o build/slices/MyMicroTunnel.arm64 $(SOURCES)
 	swiftc -O -parse-as-library -target x86_64-apple-macos13 \
 		-F $(SPARKLE) -framework Sparkle \
 		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-		-o build/slices/XpremVpn.x86_64 $(SOURCES)
-	lipo -create -output $(BIN) build/slices/XpremVpn.arm64 build/slices/XpremVpn.x86_64
+		-o build/slices/MyMicroTunnel.x86_64 $(SOURCES)
+	lipo -create -output $(BIN) build/slices/MyMicroTunnel.arm64 build/slices/MyMicroTunnel.x86_64
 	rm -rf build/slices
 	rm -rf $(DEST)/Contents/Frameworks/Sparkle.framework
 	cp -R $(SPARKLE)/Sparkle.framework $(DEST)/Contents/Frameworks/
 	sed -e 's/__VERSION__/$(VERSION)/g' -e 's/__BUILD__/$(COMMIT)/g' Info.plist > $(DEST)/Contents/Info.plist
-	cp ../build/wiregard-mini-vpn $(ENGINE)
+	cp ../build/mymicrotunnel $(ENGINE)
 	# Shipped inside the bundle so a customer needs neither Homebrew nor a
 	# second installer before this one.
 	cp ../third_party/wireguard-go $(WGGO)

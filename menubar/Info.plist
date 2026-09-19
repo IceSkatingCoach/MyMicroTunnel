@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
   <key>CFBundleName</key>
-  <string>Xprem VPN</string>
+  <string>MyMicroTunnel</string>
   <key>CFBundleDisplayName</key>
-  <string>Xprem VPN</string>
+  <string>MyMicroTunnel</string>
   <key>CFBundleIdentifier</key>
-  <string>ca.maragato.xprem.vpn-menubar</string>
+  <string>ca.maragato.mymicrotunnel-menubar</string>
   <key>CFBundleExecutable</key>
-  <string>XpremVpn</string>
+  <string>MyMicroTunnel</string>
   <key>CFBundlePackageType</key>
   <string>APPL</string>
   <key>CFBundleShortVersionString</key>
@@ -19,7 +19,7 @@
        its own key below rather than here. -->
   <key>CFBundleVersion</key>
   <string>__VERSION__</string>
-  <key>XpremBuildCommit</key>
+  <key>MyMicroTunnelBuildCommit</key>
   <string>__BUILD__</string>
   <key>LSMinimumSystemVersion</key>
   <string>13.0</string>

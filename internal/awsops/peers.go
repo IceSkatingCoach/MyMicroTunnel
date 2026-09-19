@@ -59,7 +59,7 @@ func (c *Client) PutPeers(ctx context.Context, parameter string, peers []Peer) e
 		Type:        "String",
 		Value:       aws.String(string(encoded)),
 		Overwrite:   aws.Bool(true),
-		Description: aws.String("WireGuard peers reconciled by the gateway. Managed by wiregard-mini-vpn."),
+		Description: aws.String("WireGuard peers reconciled by the gateway. Managed by mymicrotunnel."),
 	})
 	return err
 }

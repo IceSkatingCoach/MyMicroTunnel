@@ -13,9 +13,9 @@ Some preamble nobody should ship to users.
 
 ## 1.0.3
 
-- The menu bar can now remove Xprem VPN from this Mac. It explains what it
+- The menu bar can now remove MyMicroTunnel from this Mac. It explains what it
   does not touch.
-- New ` + "`wiregard-mini-vpn diagnose`" + ` collects **everything** a support
+- New ` + "`mymicrotunnel diagnose`" + ` collects **everything** a support
   conversation would ask for.
 
 ## 1.0.2
@@ -30,7 +30,7 @@ Some preamble nobody should ship to users.
 func TestChangelogSectionTakesOnlyItsOwnRelease(t *testing.T) {
 	section := changelogSection(sampleChangelog, "1.0.3")
 
-	if !strings.Contains(section, "remove Xprem VPN") {
+	if !strings.Contains(section, "remove MyMicroTunnel") {
 		t.Errorf("the section is missing its own content:\n%s", section)
 	}
 	// The next release's notes appearing in this one's dialog is worse than no
@@ -63,7 +63,7 @@ func TestMarkdownToHTMLRendersWhatTheNotesActuallyUse(t *testing.T) {
 
 	for _, expected := range []string{
 		"<ul>", "</ul>", "<li>",
-		"<code>wiregard-mini-vpn diagnose</code>",
+		"<code>mymicrotunnel diagnose</code>",
 		"<strong>everything</strong>",
 	} {
 		if !strings.Contains(html, expected) {

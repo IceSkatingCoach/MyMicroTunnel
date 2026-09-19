@@ -1,6 +1,6 @@
 # Third-party notices
 
-wiregard_mini_vpn itself is GPL-3.0-or-later; see `LICENSE`. This file covers
+MyMicroTunnel itself is GPL-3.0-or-later; see `LICENSE`. This file covers
 the third-party code it ships and links, all of which is under licences
 compatible with that.
 
@@ -11,8 +11,8 @@ compatible with that.
 - Version: `0.0.20230223`, from <https://git.zx2c4.com/wireguard-go>
 - Licence: MIT
 - Copyright: © 2017–2023 WireGuard LLC
-- Installed at `/usr/local/lib/wiregard-mini-vpn/wireguard-go` and inside
-  `XpremVpn.app/Contents/Resources/`
+- Installed at `/usr/local/lib/mymicrotunnel/wireguard-go` and inside
+  `MyMicroTunnel.app/Contents/Resources/`
 - Full licence text: `third_party/LICENSE.wireguard-go`, produced by
   `make wireguard`
 
@@ -31,7 +31,7 @@ file of wireguard-go itself is changed.
 
 - Version `2.10.0`, from <https://github.com/sparkle-project/Sparkle>
 - Licence: MIT, with a BSD-licensed portion (see `third_party/sparkle/LICENSE.sparkle`)
-- Embedded as `XpremVpn.app/Contents/Frameworks/Sparkle.framework`, unmodified
+- Embedded as `MyMicroTunnel.app/Contents/Frameworks/Sparkle.framework`, unmodified
 - Fetched and checksummed by `make sparkle`
 
 ### What is deliberately not shipped
@@ -69,4 +69,4 @@ compatible with GPLv3 and **not** with GPLv2, so GPLv3 is the only version of
 the GPL this product could have been released under while linking the AWS SDK.
 
 `go list -m all` prints the exact versions for any given build, and
-`wiregard-mini-vpn version` prints the commit those versions were resolved at.
+`mymicrotunnel version` prints the commit those versions were resolved at.

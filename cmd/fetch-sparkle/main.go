@@ -10,7 +10,7 @@
 //
 // The result lands in third_party/sparkle/ and is not committed:
 //
-//	Sparkle.framework   embedded in XpremVpn.app/Contents/Frameworks
+//	Sparkle.framework   embedded in MyMicroTunnel.app/Contents/Frameworks
 //	bin/generate_keys   creates the EdDSA keypair, once, into the Keychain
 //	bin/sign_update     signs a package and the appcast that points at it
 //	bin/generate_appcast  builds a whole feed from a directory of updates

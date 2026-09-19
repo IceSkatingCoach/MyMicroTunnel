@@ -11,7 +11,7 @@ import (
 	"strings"
 )
 
-//go:embed cloudformation-xprem-onprem-vpn.yaml
+//go:embed cloudformation-microtunnel.yaml
 var Template string
 
 // UpdatesTemplate is the vendor's own stack rather than a customer's: the S3
