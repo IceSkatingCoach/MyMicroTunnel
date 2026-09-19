@@ -425,6 +425,23 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 		{rule, SudoersPath, "0440"},
 	}
 
+	// A key that predates per-interface names is moved, not abandoned.
+	//
+	// Only root can see inside /etc/wireguard, so this cannot be decided
+	// earlier: an unprivileged stage cannot tell "no key" from "not allowed
+	// to look", and guessing wrong either mints a key the gateway does not
+	// trust or discards one it does. Moving it keeps the public half already
+	// registered as a peer valid.
+	if asRoot && keyPath != LegacyClientKeyPath &&
+		!sys.Exists(keyPath) && sys.Exists(LegacyClientKeyPath) {
+		if _, err := os.Stat(staged); err != nil {
+			if err := os.Rename(LegacyClientKeyPath, keyPath); err != nil {
+				return fmt.Errorf("moving %s to %s: %w", LegacyClientKeyPath, keyPath, err)
+			}
+			ui.Done("Moved the existing key to %s", keyPath)
+		}
+	}
+
 	// An existing private key is never replaced. Overwriting one leaves the
 	// gateway trusting a public key whose private half no longer exists: the
 	// tunnel comes up, sends, and is silently dropped at the far end as an

@@ -166,3 +166,25 @@ func TestJoiningAnEmptyRootDoesNotProduceARelativePath(t *testing.T) {
 	}
 	// So InstallApp has to check the root before joining, not after.
 }
+
+// A tunnel config names the key by path, so the two have to agree. The first
+// version of this product kept one key at /etc/wireguard/client.key; profiles
+// give each interface its own. A machine carrying the old one must not end up
+// with a config pointing at a key that is not there — the tunnel comes up and
+// refuses to load a private key, which reads as a broken deployment.
+func TestTheTunnelConfigNamesThisProfilesKey(t *testing.T) {
+	s := valid()
+	s.InterfaceName = "wg0"
+	if path := s.ClientKeyPath(); path != "/etc/wireguard/wg0.key" {
+		t.Errorf("the default profile's key path is %s", path)
+	}
+	if !strings.Contains(TunnelConfig(s), "private-key "+s.ClientKeyPath()) {
+		t.Error("the config loads a key from somewhere other than this profile's path")
+	}
+
+	second := valid()
+	second.InterfaceName = "wg1"
+	if second.ClientKeyPath() == s.ClientKeyPath() {
+		t.Error("two profiles share one private key, so either can revoke the other")
+	}
+}

@@ -27,6 +27,13 @@ const (
 )
 
 const (
+	// LegacyClientKeyPath is where a single-tunnel install kept the private
+	// key, before one key per interface. Nothing writes here any more; the
+	// privileged stage moves it to the interface's own path when it finds it,
+	// because the public half is already in a gateway's peer list and minting
+	// a new key would leave that peer trusting one nobody holds.
+	LegacyClientKeyPath = "/etc/wireguard/client.key"
+
 	SudoersPath      = "/etc/sudoers.d/mymicrotunnel"
 	InstalledAppPath = "/Applications/MyMicroTunnel.app"
 
