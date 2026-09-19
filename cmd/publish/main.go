@@ -2,7 +2,7 @@
 
 // Command publish deploys the update-feed stack and puts a release on it.
 //
-//	go run ./cmd/publish --setup --bucket xpremvpn-downloads --domain downloads.example.com
+//	go run ./cmd/publish --setup --bucket mymicrotunnel-downloads --domain downloads.example.com
 //	go run ./cmd/publish
 //
 // --setup deploys or updates the CloudFront and S3 stack, and prints the two
@@ -34,11 +34,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/infra"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/awsops"
+	"github.com/IceSkatingCoach/MyMicroTunnel/infra"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
 )
 
-const defaultStackName = "xprem-vpn-updates"
+const defaultStackName = "mymicrotunnel-updates"
 
 func main() {
 	setup := flag.Bool("setup", false, "deploy or update the feed's own infrastructure and exit")
@@ -118,6 +118,11 @@ func deployFeedStack(ctx context.Context, client *awsops.Client, stackName, buck
 	fmt.Printf("  changed later without orphaning every installed copy.\n")
 }
 
+// latestPackageKey is the fixed name the website's download button points at.
+// It is overwritten by every release, which is the point: the page stays
+// correct without being edited.
+const latestPackageKey = "MyMicroTunnel.pkg"
+
 // --- publishing a release --------------------------------------------------
 
 func publish(ctx context.Context, client *awsops.Client, stackName string, force bool) {
@@ -138,10 +143,11 @@ func publish(ctx context.Context, client *awsops.Client, stackName string, force
 	root := repoRoot()
 	version := readVersion(root)
 	buildDir := filepath.Join(root, "build")
-	archivePath := filepath.Join(buildDir, fmt.Sprintf("XpremVpn-%s.zip", version))
+	archivePath := filepath.Join(buildDir, fmt.Sprintf("MyMicroTunnel-%s.zip", version))
+	packagePath := filepath.Join(buildDir, fmt.Sprintf("MyMicroTunnel-%s.pkg", version))
 	feedPath := filepath.Join(buildDir, "appcast.xml")
 
-	for _, required := range []string{archivePath, feedPath} {
+	for _, required := range []string{archivePath, packagePath, feedPath} {
 		if _, err := os.Stat(required); err != nil {
 			fail("%s is missing. Build the release first:\n\n"+
 				"      make pkg-notarized PROFILE=<profile> APPCAST_FEED_URL=%s SPARKLE_PUBLIC_KEY=<key>\n"+
@@ -180,6 +186,28 @@ func publish(ctx context.Context, client *awsops.Client, stackName string, force
 	}
 	done("s3://%s/%s", bucket, archiveKey)
 
+	// The package itself, for people who are installing rather than updating.
+	//
+	// Twice: once under its version, which is immutable and citable, and once
+	// at a fixed name the website's download button points at. Without the
+	// second one the page has to be edited for every release, and the release
+	// nobody remembers to edit it for is the one that leaves a download link
+	// pointing at a version that is no longer current.
+	step("Uploading %s", filepath.Base(packagePath))
+	packageKey := "releases/" + filepath.Base(packagePath)
+	if err := client.Upload(ctx, bucket, packageKey, packagePath,
+		"application/octet-stream", "public, max-age=31536000, immutable"); err != nil {
+		fail("%v", err)
+	}
+	done("s3://%s/%s", bucket, packageKey)
+
+	step("Updating the download link")
+	if err := client.Upload(ctx, bucket, latestPackageKey, packagePath,
+		"application/octet-stream", "public, max-age=300"); err != nil {
+		fail("%v", err)
+	}
+	done("s3://%s/%s", bucket, latestPackageKey)
+
 	step("Uploading the appcast")
 	if err := client.Upload(ctx, bucket, "appcast.xml", feedPath,
 		"application/xml", "public, max-age=300"); err != nil {
@@ -187,8 +215,8 @@ func publish(ctx context.Context, client *awsops.Client, stackName string, force
 	}
 	done("s3://%s/appcast.xml", bucket)
 
-	step("Invalidating the cached feed")
-	invalidation, err := client.Invalidate(ctx, distribution, "/appcast.xml")
+	step("Invalidating the cached feed and download link")
+	invalidation, err := client.Invalidate(ctx, distribution, "/appcast.xml", "/"+latestPackageKey)
 	if err != nil {
 		fail("%v", err)
 	}

@@ -41,6 +41,14 @@ AWSTemplateFormatVersion: '2010-09-09'
 #   · the target group's targets, registered by the installer. CloudFormation
 #     would otherwise have to know every workstation address at deploy time.
 #
+#   · the alias record for ServiceDomainName, upserted by the installer.
+#     AWS::Route53::RecordSet cannot take over a name that already exists: it
+#     fails the whole stack with "but it already exists" and rolls back a
+#     deployment minutes from working. A name already pointed somewhere is the
+#     normal case, so a Route53 UPSERT writes it instead. The zone is never
+#     created or deleted here: it is the customer's, it predates this stack,
+#     and it usually carries their mail.
+#
 # Both are deliberate gaps in the stack's coverage: `cloudformation delete`
 # leaves neither behind, because the parameter is owned by the stack and the
 # targets die with the target group.
@@ -127,6 +135,73 @@ Parameters:
     MaxValue: 65535
     Description: Port the service listens on, on every workstation
 
+  # --- the exposed TCP ports ----------------------------------------------
+  #
+  # Ten numbered slots, and ten near-identical blocks of resources below,
+  # rather than a list and a loop. A loop needs Fn::ForEach and therefore the
+  # AWS::LanguageExtensions macro, which rewrites the whole template —
+  # including the boot script's Fn::Sub, whose bash `${!...}` escapes must
+  # survive untouched. A slot that is 0 builds nothing.
+  TcpPort1:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort2:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort3:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort4:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort5:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort6:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort7:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort8:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort9:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
+  TcpPort10:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 65535
+
   HealthCheckPath:
     Type: String
     Default: /hc
@@ -147,6 +222,27 @@ Parameters:
     Description: >-
       Latest AL2023 arm64 AMI. Kernel 6.1 carries WireGuard in-tree, so only
       the userspace tooling is installed at boot.
+
+  IdleTimeoutMinutes:
+    Type: Number
+    Default: 0
+    MinValue: 0
+    MaxValue: 1440
+    Description: >-
+      Minutes of no traffic through the load balancer after which the gateway
+      is scaled to zero. 0 keeps it running. The instance is terminated rather
+      than stopped: it is an Auto Scaling group of one, its identity lives in
+      SSM and its address is an Elastic IP, so a replacement is the same
+      gateway — and a terminated instance costs nothing at all, where a stopped
+      one still pays for its volume.
+
+  AppPrincipalArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Who may assume the wake role: the IAM user or role the workstation's AWS
+      profile authenticates as. Empty trusts the account, which means any
+      principal in it that is itself allowed to call sts:AssumeRole.
 
   AlarmEmail:
     Type: String
@@ -182,6 +278,25 @@ Conditions:
   AlarmsTunnel: !And
     - !Condition Alarms
     - !Equals [!Ref AlarmOnTunnelDown, 'true']
+
+  IdleStop: !Not [!Equals [!Ref IdleTimeoutMinutes, 0]]
+  HasAppPrincipal: !Not [!Equals [!Ref AppPrincipalArn, '']]
+  # Two spellings of the same alarm. With idle-stop on, a gateway at zero is
+  # the deployment working as asked, so "no instance" cannot be the trigger;
+  # the metric has to be "fewer instances than were asked for" instead.
+  AlarmsGatewayDown: !And [!Condition Alarms, !Not [!Condition IdleStop]]
+  AlarmsGatewayShort: !And [!Condition Alarms, !Condition IdleStop]
+
+  HasTcpPort1: !Not [!Equals [!Ref TcpPort1, 0]]
+  HasTcpPort2: !Not [!Equals [!Ref TcpPort2, 0]]
+  HasTcpPort3: !Not [!Equals [!Ref TcpPort3, 0]]
+  HasTcpPort4: !Not [!Equals [!Ref TcpPort4, 0]]
+  HasTcpPort5: !Not [!Equals [!Ref TcpPort5, 0]]
+  HasTcpPort6: !Not [!Equals [!Ref TcpPort6, 0]]
+  HasTcpPort7: !Not [!Equals [!Ref TcpPort7, 0]]
+  HasTcpPort8: !Not [!Equals [!Ref TcpPort8, 0]]
+  HasTcpPort9: !Not [!Equals [!Ref TcpPort9, 0]]
+  HasTcpPort10: !Not [!Equals [!Ref TcpPort10, 0]]
 
 Resources:
   # --- Tunnel gateway ------------------------------------------------------
@@ -251,7 +366,7 @@ Resources:
                 Resource: '*'
                 Condition:
                   StringEquals:
-                    cloudwatch:namespace: XpremVpn
+                    cloudwatch:namespace: MyMicroTunnel
 
   GatewayInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -309,7 +424,7 @@ Resources:
 
               # Sourced by the reconcile script, so the two never disagree about
               # which parameters and which route tables belong to this stack.
-              cat > /etc/xprem-gateway.env <<ENV
+              cat > /etc/microtunnel-gateway.env <<ENV
               REGION=${AWS::Region}
               STACK=${AWS::StackName}
               PEERS_PARAM=/${AWS::StackName}/wireguard/peers
@@ -320,14 +435,14 @@ Resources:
               VPN_CIDR=${VpnCidr}
               GATEWAY_ADDRESS=${GatewayVpnAddress}
               ENV
-              chmod 600 /etc/xprem-gateway.env
-              . /etc/xprem-gateway.env
+              chmod 600 /etc/microtunnel-gateway.env
+              . /etc/microtunnel-gateway.env
 
               TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token \
                 -H 'X-aws-ec2-metadata-token-ttl-seconds: 600')
               INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" \
                 http://169.254.169.254/latest/meta-data/instance-id)
-              echo "INSTANCE_ID=$INSTANCE_ID" >> /etc/xprem-gateway.env
+              echo "INSTANCE_ID=$INSTANCE_ID" >> /etc/microtunnel-gateway.env
 
               # The endpoint every workstation dials. Claimed before anything
               # else, so a replacement is reachable as early as possible.
@@ -377,13 +492,13 @@ Resources:
               # keeping them out of this file means a peer change never needs a
               # new boot script and therefore never replaces this instance.
 
-              install -m 0755 /dev/stdin /usr/local/sbin/xprem-gateway-sync <<'SYNC'
+              install -m 0755 /dev/stdin /usr/local/sbin/microtunnel-gateway-sync <<'SYNC'
               #!/bin/bash
               # Reconciles the three things that are not CloudFormation's to own:
               # the VPN route, the WireGuard peer list, and the metric that says
               # whether anybody is actually connected.
               set -euo pipefail
-              . /etc/xprem-gateway.env
+              . /etc/microtunnel-gateway.env
 
               for table in $ROUTE_TABLES; do
                 aws ec2 replace-route --region "$REGION" \
@@ -439,13 +554,13 @@ Resources:
               done < <(wg show wg0 latest-handshakes 2>/dev/null || true)
 
               aws cloudwatch put-metric-data --region "$REGION" \
-                --namespace XpremVpn \
+                --namespace MyMicroTunnel \
                 --metric-name ConnectedPeers \
                 --dimensions StackName="$STACK" \
                 --value "$connected" >/dev/null 2>&1 || true
               SYNC
 
-              cat > /etc/systemd/system/xprem-gateway-sync.service <<UNIT
+              cat > /etc/systemd/system/microtunnel-gateway-sync.service <<UNIT
               [Unit]
               Description=Reconcile the WireGuard peers, the VPN route and the connected-peer metric
               After=wg-quick@wg0.service
@@ -453,10 +568,10 @@ Resources:
 
               [Service]
               Type=oneshot
-              ExecStart=/usr/local/sbin/xprem-gateway-sync
+              ExecStart=/usr/local/sbin/microtunnel-gateway-sync
               UNIT
 
-              cat > /etc/systemd/system/xprem-gateway-sync.timer <<UNIT
+              cat > /etc/systemd/system/microtunnel-gateway-sync.timer <<UNIT
               [Unit]
               Description=Run the gateway reconcile every minute
 
@@ -471,10 +586,10 @@ Resources:
 
               systemctl enable --now wg-quick@wg0
               systemctl daemon-reload
-              systemctl enable --now xprem-gateway-sync.timer
+              systemctl enable --now microtunnel-gateway-sync.timer
               # Once synchronously, so the route and the peers exist before the
               # signal below tells CloudFormation the gateway is ready.
-              /usr/local/sbin/xprem-gateway-sync
+              /usr/local/sbin/microtunnel-gateway-sync
 
               # Published last: its arrival is the installer's signal that the
               # boot script got all the way through.
@@ -504,7 +619,10 @@ Resources:
         WaitOnResourceSignals: true
         PauseTime: PT10M
     Properties:
-      MinSize: '1'
+      # Zero is only allowed as a floor when idle-stop is on. A group whose
+      # minimum is one cannot be scaled to zero, and the scaling policy below
+      # would silently do nothing.
+      MinSize: !If [IdleStop, '0', '1']
       MaxSize: '1'
       DesiredCapacity: '1'
       VPCZoneIdentifier: !Ref GatewaySubnetIds
@@ -513,11 +631,108 @@ Resources:
         Version: !GetAtt GatewayLaunchTemplate.LatestVersionNumber
       HealthCheckType: EC2
       HealthCheckGracePeriod: 300
-      # Collected so the group-size alarm below has something to read.
+      # Collected so the group-size alarms below have something to read.
+      # GroupDesiredCapacity is what tells an idle gateway apart from a broken
+      # one: at zero on purpose, both have no instance in service.
       MetricsCollection:
         - Granularity: 1Minute
           Metrics:
             - GroupInServiceInstances
+            - GroupDesiredCapacity
+
+  # --- Turning the gateway off when nobody is using it ---------------------
+  #
+  # The alarm watches the load balancer, not the instance: the question is
+  # whether anybody is reaching the service, and the tunnel's own keepalives
+  # would make any instance-level metric look busy forever.
+  #
+  # ActiveFlowCount is not published when there are no flows at all, which is
+  # exactly the state being watched for, so missing data has to count as
+  # breaching. Without that the alarm would sit in INSUFFICIENT_DATA on a
+  # deployment nobody is using — the one case it exists for.
+  ScaleToZeroPolicy:
+    Condition: IdleStop
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref GatewayGroup
+      PolicyType: SimpleScaling
+      AdjustmentType: ExactCapacity
+      ScalingAdjustment: 0
+      Cooldown: '60'
+
+  IdleAlarm:
+    Condition: IdleStop
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-idle'
+      AlarmDescription: >-
+        No connection has crossed the load balancer for the configured idle
+        timeout, so the gateway is being scaled to zero. The workstation's own
+        client wakes it again on the next connection attempt.
+      Namespace: AWS/NetworkELB
+      MetricName: ActiveFlowCount
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt LoadBalancer.LoadBalancerFullName
+      Statistic: Maximum
+      # One datapoint per minute, and as many of them as the timeout asks for.
+      Period: 60
+      EvaluationPeriods: !Ref IdleTimeoutMinutes
+      Threshold: 0
+      ComparisonOperator: LessThanOrEqualToThreshold
+      TreatMissingData: breaching
+      AlarmActions:
+        - !Ref ScaleToZeroPolicy
+
+  # --- The wake role -------------------------------------------------------
+  #
+  # What the workstation is allowed to do to this deployment when it finds the
+  # gateway switched off. Deliberately not the deploy identity: that one can
+  # create and delete everything here, and the app needs it several times a
+  # day, unattended, from a laptop.
+  #
+  # Setting the desired capacity to 1 is the whole grant. It cannot change the
+  # maximum, cannot launch anything of its own choosing — the launch template
+  # is the group's, not a parameter of this call — and cannot reach any other
+  # Auto Scaling group in the account.
+  WakeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !If
+                - HasAppPrincipal
+                - !Ref AppPrincipalArn
+                - !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: wake-the-gateway
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: autoscaling:SetDesiredCapacity
+                Resource: !Sub 'arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/${GatewayGroup}'
+              # Describe calls take no resource, so they are scoped by being
+              # read-only: they say whether the gateway is up yet, which is
+              # what the client waits on before it re-pins the tunnel.
+              - Effect: Allow
+                Action:
+                  - autoscaling:DescribeAutoScalingGroups
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                Resource: '*'
+              # For a deployment whose gateway was stopped by hand rather than
+              # scaled away. Tag-scoped to this stack's own instances.
+              - Effect: Allow
+                Action: ec2:StartInstances
+                Resource: !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*'
+                Condition:
+                  StringEquals:
+                    'aws:ResourceTag/aws:cloudformation:stack-name': !Ref AWS::StackName
 
   # --- TLS -----------------------------------------------------------------
   Certificate:
@@ -575,20 +790,401 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
+  # --- The exposed TCP ports, one block of three resources per slot -------
+  #
+  # The health check is TCP, not the HTTP one the main service uses: these
+  # ports carry whatever the workstation serves on them, and an HTTP probe
+  # against a protocol that is not HTTP reports a healthy service as unhealthy.
+  # Both thresholds are the same number because a TCP health check on a
+  # Network Load Balancer requires that.
+  #
+  # An unused slot is 0 and builds nothing at all.
+  TcpTargetGroup1:
+    Condition: HasTcpPort1
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort1
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener1:
+    Condition: HasTcpPort1
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort1
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup1
+
+  GatewayTcpIngress1:
+    Condition: HasTcpPort1
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort1
+      ToPort: !Ref TcpPort1
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup2:
+    Condition: HasTcpPort2
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort2
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener2:
+    Condition: HasTcpPort2
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort2
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup2
+
+  GatewayTcpIngress2:
+    Condition: HasTcpPort2
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort2
+      ToPort: !Ref TcpPort2
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup3:
+    Condition: HasTcpPort3
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort3
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener3:
+    Condition: HasTcpPort3
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort3
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup3
+
+  GatewayTcpIngress3:
+    Condition: HasTcpPort3
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort3
+      ToPort: !Ref TcpPort3
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup4:
+    Condition: HasTcpPort4
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort4
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener4:
+    Condition: HasTcpPort4
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort4
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup4
+
+  GatewayTcpIngress4:
+    Condition: HasTcpPort4
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort4
+      ToPort: !Ref TcpPort4
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup5:
+    Condition: HasTcpPort5
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort5
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener5:
+    Condition: HasTcpPort5
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort5
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup5
+
+  GatewayTcpIngress5:
+    Condition: HasTcpPort5
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort5
+      ToPort: !Ref TcpPort5
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup6:
+    Condition: HasTcpPort6
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort6
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener6:
+    Condition: HasTcpPort6
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort6
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup6
+
+  GatewayTcpIngress6:
+    Condition: HasTcpPort6
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort6
+      ToPort: !Ref TcpPort6
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup7:
+    Condition: HasTcpPort7
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort7
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener7:
+    Condition: HasTcpPort7
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort7
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup7
+
+  GatewayTcpIngress7:
+    Condition: HasTcpPort7
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort7
+      ToPort: !Ref TcpPort7
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup8:
+    Condition: HasTcpPort8
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort8
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener8:
+    Condition: HasTcpPort8
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort8
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup8
+
+  GatewayTcpIngress8:
+    Condition: HasTcpPort8
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort8
+      ToPort: !Ref TcpPort8
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup9:
+    Condition: HasTcpPort9
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort9
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener9:
+    Condition: HasTcpPort9
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort9
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup9
+
+  GatewayTcpIngress9:
+    Condition: HasTcpPort9
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort9
+      ToPort: !Ref TcpPort9
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
+  TcpTargetGroup10:
+    Condition: HasTcpPort10
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref VpcId
+      TargetType: ip
+      Protocol: TCP
+      Port: !Ref TcpPort10
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 30
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: '10'
+
+  TcpListener10:
+    Condition: HasTcpPort10
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: !Ref TcpPort10
+      Protocol: TCP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TcpTargetGroup10
+
+  GatewayTcpIngress10:
+    Condition: HasTcpPort10
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref GatewaySecurityGroup
+      IpProtocol: tcp
+      FromPort: !Ref TcpPort10
+      ToPort: !Ref TcpPort10
+      CidrIp: !Ref VpcCidr
+      Description: NLB nodes towards an exposed TCP port
+
   # An NLB cannot redirect, so there is no port 80 listener. Plain HTTP to this
   # hostname simply does not answer, which is the safer of the two options for
   # a server that hands out signed update manifests.
 
-  DnsRecord:
-    Type: AWS::Route53::RecordSet
-    Properties:
-      HostedZoneId: !Ref HostedZoneId
-      Name: !Sub '${ServiceDomainName}.'
-      Type: A
-      AliasTarget:
-        DNSName: !GetAtt LoadBalancer.DNSName
-        HostedZoneId: !GetAtt LoadBalancer.CanonicalHostedZoneID
-        EvaluateTargetHealth: false
+  # The alias record for ServiceDomainName is not here; see the top of the
+  # file. The installer upserts it, because CloudFormation cannot.
 
   # --- Telling somebody ----------------------------------------------------
   AlarmTopic:
@@ -616,10 +1212,11 @@ Resources:
       Endpoint: !Ref AlarmWebhook
       Protocol: https
 
-  # The gateway is the one part that should never be down on purpose.
+  # The gateway is the one part that should never be down on purpose — unless
+  # idle-stop is on, in which case see GatewayShortAlarm below.
   GatewayDownAlarm:
     Type: AWS::CloudWatch::Alarm
-    Condition: Alarms
+    Condition: AlarmsGatewayDown
     Properties:
       AlarmName: !Sub '${AWS::StackName}-gateway-down'
       AlarmDescription: >-
@@ -641,6 +1238,57 @@ Resources:
       OKActions:
         - !Ref AlarmTopic
 
+  # The same question asked of a deployment that switches itself off: not "is
+  # an instance running" but "is one missing that was asked for". A gateway
+  # scaled to zero by the idle timeout answers no; one that died and was not
+  # replaced answers yes.
+  GatewayShortAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AlarmsGatewayShort
+    Properties:
+      AlarmName: !Sub '${AWS::StackName}-gateway-down'
+      AlarmDescription: >-
+        The Auto Scaling group has fewer gateway instances in service than it
+        was asked for, so the hostname is dark and the replacement has not
+        worked.
+      Metrics:
+        - Id: shortfall
+          Expression: desired - inservice
+          Label: Gateway instances asked for but not in service
+          ReturnData: true
+        - Id: desired
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/AutoScaling
+              MetricName: GroupDesiredCapacity
+              Dimensions:
+                - Name: AutoScalingGroupName
+                  Value: !Ref GatewayGroup
+            Period: 300
+            Stat: Maximum
+        - Id: inservice
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/AutoScaling
+              MetricName: GroupInServiceInstances
+              Dimensions:
+                - Name: AutoScalingGroupName
+                  Value: !Ref GatewayGroup
+            Period: 300
+            Stat: Minimum
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      # Not breaching: an ASG at zero publishes nothing, and that is the state
+      # this deployment is designed to spend most of its time in.
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref AlarmTopic
+      OKActions:
+        - !Ref AlarmTopic
+
   TunnelDownAlarm:
     Type: AWS::CloudWatch::Alarm
     Condition: AlarmsTunnel
@@ -649,7 +1297,7 @@ Resources:
       AlarmDescription: >-
         No workstation has completed a WireGuard handshake recently, so the
         hostname answers TLS and then nothing.
-      Namespace: XpremVpn
+      Namespace: MyMicroTunnel
       MetricName: ConnectedPeers
       Dimensions:
         - Name: StackName
@@ -681,6 +1329,49 @@ Outputs:
     Description: Target group the installer registers each workstation in
     Value: !Ref TargetGroup
 
+  # One exposed port and its target group, as port=arn. Pairs rather than two
+  # outputs each, because a slot holding no port has no target group at all and
+  # the installer cannot register into a name it had to guess.
+  TcpTarget1:
+    Condition: HasTcpPort1
+    Value: !Join ['=', [!Ref TcpPort1, !Ref TcpTargetGroup1]]
+
+  TcpTarget2:
+    Condition: HasTcpPort2
+    Value: !Join ['=', [!Ref TcpPort2, !Ref TcpTargetGroup2]]
+
+  TcpTarget3:
+    Condition: HasTcpPort3
+    Value: !Join ['=', [!Ref TcpPort3, !Ref TcpTargetGroup3]]
+
+  TcpTarget4:
+    Condition: HasTcpPort4
+    Value: !Join ['=', [!Ref TcpPort4, !Ref TcpTargetGroup4]]
+
+  TcpTarget5:
+    Condition: HasTcpPort5
+    Value: !Join ['=', [!Ref TcpPort5, !Ref TcpTargetGroup5]]
+
+  TcpTarget6:
+    Condition: HasTcpPort6
+    Value: !Join ['=', [!Ref TcpPort6, !Ref TcpTargetGroup6]]
+
+  TcpTarget7:
+    Condition: HasTcpPort7
+    Value: !Join ['=', [!Ref TcpPort7, !Ref TcpTargetGroup7]]
+
+  TcpTarget8:
+    Condition: HasTcpPort8
+    Value: !Join ['=', [!Ref TcpPort8, !Ref TcpTargetGroup8]]
+
+  TcpTarget9:
+    Condition: HasTcpPort9
+    Value: !Join ['=', [!Ref TcpPort9, !Ref TcpTargetGroup9]]
+
+  TcpTarget10:
+    Condition: HasTcpPort10
+    Value: !Join ['=', [!Ref TcpPort10, !Ref TcpTargetGroup10]]
+
   PeersParameter:
     Description: SSM parameter holding the WireGuard peer list
     Value: !Sub '/${AWS::StackName}/wireguard/peers'
@@ -692,8 +1383,24 @@ Outputs:
   GatewayGroupName:
     Value: !Ref GatewayGroup
 
+  WakeRoleArn:
+    Description: >-
+      Role the workstation assumes to bring the gateway back after an idle
+      stop. Nothing else in the deployment uses it.
+    Value: !GetAtt WakeRole.Arn
+
+  IdleTimeoutMinutes:
+    Description: Minutes of silence before the gateway scales to zero; 0 is never
+    Value: !Ref IdleTimeoutMinutes
+
   LoadBalancerDnsName:
     Value: !GetAtt LoadBalancer.DNSName
+
+  # Both halves of the alias the installer writes. The zone id is the load
+  # balancer's own, not the customer's — an alias record names the zone of the
+  # thing it points at.
+  LoadBalancerHostedZoneId:
+    Value: !GetAtt LoadBalancer.CanonicalHostedZoneID
 
   AlarmTopicArn:
     Condition: Alarms

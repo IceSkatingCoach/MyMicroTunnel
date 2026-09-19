@@ -1,9 +1,9 @@
-# Lets the Xprem VPN menu bar app run wg-quick as root without a password
+# Lets the MyMicroTunnel menu bar app run wg-quick as root without a password
 # prompt on every toggle. Install with:
 #
 #   sudo install -m 0440 -o root -g wheel \
-#     infra/xprem-vpn-menubar/sudoers-xprem-vpn /etc/sudoers.d/xprem-vpn
-#   sudo visudo -c -f /etc/sudoers.d/xprem-vpn
+#     infra/mymicrotunnel-menubar/sudoers-mymicrotunnel /etc/sudoers.d/mymicrotunnel
+#   sudo visudo -c -f /etc/sudoers.d/mymicrotunnel
 #
 # Scope: these two exact command lines only. wg-quick with any other argument,
 # and every other program, still prompts as usual.

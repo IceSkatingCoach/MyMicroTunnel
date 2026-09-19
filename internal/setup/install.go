@@ -8,14 +8,16 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/infra"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/awsops"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/sys"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/tunnel"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/ui"
+	"github.com/IceSkatingCoach/MyMicroTunnel/infra"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/sys"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/tunnel"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/ui"
 )
 
 type Options struct {
@@ -45,27 +47,23 @@ func Prerequisites(interactive bool) string {
 	return engine
 }
 
-// PublicKeyPath records the public half where the user can read it. Public keys
-// are not secret, and keeping a copy outside /etc/wireguard is what lets a
-// re-run recognise an existing tunnel without asking for root first. Without
-// it, a non-interactive run would mint a new keypair and register a second peer
-// whose private half this machine does not have.
-func PublicKeyPath() string {
-	return filepath.Join(AppConfigDir(), "client.pub")
-}
-
 // EnsureClientKey generates the private key on this machine and returns only
 // the public half. The private key never leaves the machine and is never a
 // CloudFormation parameter.
-func EnsureClientKey(interactive bool) string {
-	ui.Step("WireGuard client key")
+//
+// The key belongs to the profile rather than to the machine: two profiles are
+// two deployments, and one shared identity would let either of them revoke the
+// other's tunnel.
+func EnsureClientKey(s Settings, interactive bool) string {
+	ui.Step("WireGuard client key for %s", s.ProfileName)
 
-	if recorded, err := os.ReadFile(PublicKeyPath()); err == nil && len(recorded) > 0 {
+	keyPath := s.ClientKeyPath()
+	if recorded, err := os.ReadFile(PublicKeyPath(s.ProfileName)); err == nil && len(recorded) > 0 {
 		ui.Done("Reusing the recorded public key")
 		return strings.TrimSpace(string(recorded))
 	}
 
-	for _, sudo := range [][]string{{"-n", "cat", ClientKeyPath}, {"cat", ClientKeyPath}} {
+	for _, sudo := range [][]string{{"-n", "cat", keyPath}, {"cat", keyPath}} {
 		if !interactive && sudo[0] != "-n" {
 			continue
 		}
@@ -75,10 +73,10 @@ func EnsureClientKey(interactive bool) string {
 		}
 		public, err := tunnel.PublicKey(strings.TrimSpace(existing.Output))
 		if err != nil {
-			ui.Fail("%s does not hold a WireGuard key: %v", ClientKeyPath, err)
+			ui.Fail("%s does not hold a WireGuard key: %v", keyPath, err)
 		}
 		ui.Done("Reusing the existing key")
-		return recordPublicKey(public)
+		return recordPublicKey(s.ProfileName, public)
 	}
 
 	private, err := tunnel.GenerateKey()
@@ -88,10 +86,10 @@ func EnsureClientKey(interactive bool) string {
 
 	// Staged in the user's own directory here; the root-owned copy is written
 	// by the privileged stage, which may run in a separate process.
-	if err := os.MkdirAll(stagingDir(), 0o700); err != nil {
-		ui.Fail("Could not create %s: %v", stagingDir(), err)
+	if err := os.MkdirAll(stagingDir(s.ProfileName), 0o700); err != nil {
+		ui.Fail("Could not create %s: %v", stagingDir(s.ProfileName), err)
 	}
-	if err := os.WriteFile(filepath.Join(stagingDir(), "client.key"), []byte(private+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(stagedKeyPath(s.ProfileName), []byte(private+"\n"), 0o600); err != nil {
 		ui.Fail("Could not stage the client key: %v", err)
 	}
 	ui.Done("Key generated")
@@ -100,21 +98,30 @@ func EnsureClientKey(interactive bool) string {
 	if err != nil {
 		ui.Fail("Could not derive the public key: %v", err)
 	}
-	return recordPublicKey(public)
+	return recordPublicKey(s.ProfileName, public)
 }
 
-func recordPublicKey(publicKey string) string {
+func recordPublicKey(profileName, publicKey string) string {
 	if publicKey == "" {
 		ui.Fail("`wg pubkey` produced nothing.")
 	}
-	if err := os.MkdirAll(AppConfigDir(), 0o755); err == nil {
-		_ = os.WriteFile(PublicKeyPath(), []byte(publicKey+"\n"), 0o644)
+	if err := os.MkdirAll(ProfileDir(profileName), 0o755); err == nil {
+		_ = os.WriteFile(PublicKeyPath(profileName), []byte(publicKey+"\n"), 0o644)
 	}
 	return publicKey
 }
 
-func stagingDir() string {
-	return filepath.Join(os.TempDir(), "wiregard-mini-vpn-staging")
+// stagingDir is per profile, because installing a second profile must not pick
+// up the first one's freshly generated key and write it over a working tunnel.
+func stagingDir(profileName string) string {
+	if profileName == "" {
+		profileName = DefaultProfileName
+	}
+	return filepath.Join(os.TempDir(), "mymicrotunnel-staging", profileName)
+}
+
+func stagedKeyPath(profileName string) string {
+	return filepath.Join(stagingDir(profileName), "client.key")
 }
 
 // Discover fills in everything about the customer's account that the template
@@ -170,9 +177,27 @@ func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 	}
 	s.Endpoint = outputs["GatewayPublicIp"]
 	s.TargetGroupARN = outputs["TargetGroupArn"]
+	s.WakeRoleARN = outputs["WakeRoleArn"]
+	s.GatewayGroupName = outputs["GatewayGroupName"]
+	s.TcpTargetGroups = TcpTargetGroups(outputs)
 	if s.Endpoint == "" || s.TargetGroupARN == "" {
 		ui.Fail("The stack did not report a gateway address and a target group.")
 	}
+	if len(s.TcpTargetGroups) > 0 {
+		ui.Done("%d extra TCP port(s) exposed", len(s.TcpTargetGroups))
+	}
+
+	// The hostname is pointed at the load balancer here rather than by the
+	// template, so a name that already exists is taken over instead of failing
+	// the stack. See the note at the top of the template.
+	ui.Step("Pointing %s at the load balancer", s.DomainName)
+	if err := client.UpsertAlias(ctx, s.HostedZoneID, s.DomainName,
+		outputs["LoadBalancerDnsName"], outputs["LoadBalancerHostedZoneId"]); err != nil {
+		ui.Fail("Could not write the DNS record for %s: %v", s.DomainName, err)
+	}
+	s.LoadBalancerDNSName = outputs["LoadBalancerDnsName"]
+	s.LoadBalancerZoneID = outputs["LoadBalancerHostedZoneId"]
+	ui.Done("%s is an alias for %s", s.DomainName, s.LoadBalancerDNSName)
 
 	ui.Step("Waiting for the gateway to publish its public key")
 	serverKey, err := client.WaitForParameter(ctx, s.ServerKeyParameter(), 5*time.Minute)
@@ -189,22 +214,60 @@ func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 // CloudFormation on the other, and the symptom is a stack that deploys
 // successfully and serves nothing.
 func StackParameters(s Settings) map[string]string {
-	return map[string]string{
-		"ServiceDomainName": s.DomainName,
-		"HostedZoneId":      s.HostedZoneID,
-		"VpcId":             s.VpcID,
-		"VpcCidr":           s.VpcCidr,
-		"SubnetIds":         strings.Join(s.SubnetIDs, ","),
-		"GatewaySubnetIds":  strings.Join(s.GatewaySubnetIDs, ","),
-		"RouteTableIds":     strings.Join(s.RouteTableIDs, ","),
-		"VpnCidr":           s.VpnCidr,
-		"GatewayVpnAddress": s.GatewayAddress,
-		"ServicePort":       s.ServicePort,
-		"HealthCheckPath":   s.HealthCheckPath,
-		"AlarmEmail":        s.AlarmEmail,
-		"AlarmWebhook":      s.AlarmWebhook,
-		"AlarmOnTunnelDown": fmt.Sprintf("%t", s.AlarmOnTunnelDown),
+	parameters := map[string]string{
+		"ServiceDomainName":  s.DomainName,
+		"HostedZoneId":       s.HostedZoneID,
+		"VpcId":              s.VpcID,
+		"VpcCidr":            s.VpcCidr,
+		"SubnetIds":          strings.Join(s.SubnetIDs, ","),
+		"GatewaySubnetIds":   strings.Join(s.GatewaySubnetIDs, ","),
+		"RouteTableIds":      strings.Join(s.RouteTableIDs, ","),
+		"VpnCidr":            s.VpnCidr,
+		"GatewayVpnAddress":  s.GatewayAddress,
+		"ServicePort":        s.ServicePort,
+		"HealthCheckPath":    s.HealthCheckPath,
+		"AlarmEmail":         s.AlarmEmail,
+		"AlarmWebhook":       s.AlarmWebhook,
+		"AlarmOnTunnelDown":  fmt.Sprintf("%t", s.AlarmOnTunnelDown),
+		"IdleTimeoutMinutes": strconv.Itoa(s.IdleTimeoutMinutes),
+		"AppPrincipalArn":    s.AppPrincipalArn,
 	}
+
+	// Every slot is sent, including the empty ones. A port that was removed
+	// from the list has to arrive as 0 for its listener to be torn down; left
+	// out, CloudFormation would carry the previous value forward and the port
+	// would still be open.
+	for slot := 1; slot <= MaxTcpPorts; slot++ {
+		parameters[fmt.Sprintf("TcpPort%d", slot)] = "0"
+	}
+	for index, port := range s.TcpPortNumbers() {
+		if index >= MaxTcpPorts {
+			break
+		}
+		parameters[fmt.Sprintf("TcpPort%d", index+1)] = strconv.Itoa(int(port))
+	}
+	return parameters
+}
+
+// TcpTargetGroups reads the port=arn outputs back into a map.
+//
+// The pairs are outputs rather than a naming convention the installer could
+// reconstruct, because a slot that holds no port produces no target group at
+// all and guessing its name would mean registering into something that does
+// not exist.
+func TcpTargetGroups(outputs map[string]string) map[string]string {
+	groups := map[string]string{}
+	for key, value := range outputs {
+		if !strings.HasPrefix(key, "TcpTarget") {
+			continue
+		}
+		port, arn, found := strings.Cut(value, "=")
+		if !found || port == "" || arn == "" {
+			continue
+		}
+		groups[port] = arn
+	}
+	return groups
 }
 
 // RegisterWorkstation puts this machine into the two lists that decide whether
@@ -231,6 +294,22 @@ func RegisterWorkstation(ctx context.Context, client *awsops.Client, s Settings,
 		ui.Fail("Could not register %s behind the load balancer: %v", s.ClientAddress, err)
 	}
 	ui.Done("%s:%s is a load balancer target", s.ClientAddress, s.ServicePort)
+
+	// Each exposed port has its own target group, so each one needs this
+	// machine registering separately. A port whose group is missing from the
+	// outputs is reported rather than skipped silently: it means the stack and
+	// the settings disagree about what is exposed.
+	for _, port := range s.TcpPortNumbers() {
+		arn := s.TcpTargetGroups[strconv.Itoa(int(port))]
+		if arn == "" {
+			ui.Warn("The stack exposes no target group for TCP %d; nothing was registered for it.", port)
+			continue
+		}
+		if err := client.RegisterTarget(ctx, arn, s.ClientAddress, port); err != nil {
+			ui.Fail("Could not register %s:%d behind the load balancer: %v", s.ClientAddress, port, err)
+		}
+		ui.Done("%s:%d is a load balancer target", s.ClientAddress, port)
+	}
 }
 
 // TunnelConfig is the contents of /etc/wireguard/<interface>.conf. Separate
@@ -240,7 +319,7 @@ func TunnelConfig(s Settings) string {
 	return tunnel.Marshal(tunnel.File{
 		Address:        s.ClientAddress,
 		MTU:            TunnelMTU,
-		PrivateKeyPath: ClientKeyPath,
+		PrivateKeyPath: s.ClientKeyPath(),
 		Config: tunnel.Config{
 			Peers: []tunnel.Peer{{
 				PublicKey: s.ServerPublicKey,
@@ -255,43 +334,66 @@ func TunnelConfig(s Settings) string {
 	})
 }
 
-// SudoersRule lets the menu bar move the tunnel without a password prompt on
-// every toggle.
+// SudoersFile lets the menu bar move any of this machine's tunnels without a
+// password prompt on every toggle.
+//
+// One file holds a line pair per profile, and it is regenerated from every
+// profile rather than appended to. Appending was the obvious thing and it is
+// wrong twice over: an uninstalled profile's grant would outlive it, and a
+// profile whose interface changed would keep the old one as well as the new.
 //
 // It names the helper in /Library/PrivilegedHelperTools rather than the copy on
 // the path. See HelperPath for why that distinction is the difference between a
 // narrow grant and a root shell.
-func SudoersRule(s Settings, username string) string {
-	return strings.Join([]string{
-		"# Installed by wiregard_mini_vpn. Lets the menu bar app raise and drop the",
-		"# tunnel without a password prompt on every toggle.",
+func SudoersFile(profiles []Settings, username string) string {
+	lines := []string{
+		"# Installed by MyMicroTunnel. Lets the menu bar app raise and drop the",
+		"# tunnels without a password prompt on every toggle.",
 		"#",
-		"# Scope: these two exact command lines only. This is not a general root",
-		"# shell. Its safety rests on two things:",
+		"# Scope: these exact command lines only, two per VPN profile. This is not",
+		"# a general root shell. Its safety rests on two things:",
 		"#",
 		"#   · " + HelperPath + " is root-owned,",
 		"#     in a directory no package manager takes ownership of. A NOPASSWD rule",
 		"#     pointing into a user-writable directory — /opt/homebrew/bin, say — is",
 		"#     a password-free root shell for the user it names.",
-		"#   · " + s.TunnelConfigPath() + " stays root-owned and mode 0600,",
+		"#   · each /etc/wireguard/<interface>.conf stays root-owned and mode 0600,",
 		"#     because it names the key the helper loads and the peer it trusts.",
-		fmt.Sprintf("%s ALL=(root) NOPASSWD: %s tunnel up %s, %s tunnel down %s",
-			username, HelperPath, s.InterfaceName, HelperPath, s.InterfaceName),
-		"",
-	}, "\n")
+	}
+
+	// Sorted and de-duplicated: two profiles cannot share an interface, but a
+	// half-migrated store can still describe the same one twice, and sudo
+	// takes the last matching rule rather than complaining.
+	seen := map[string]bool{}
+	var interfaces []string
+	for _, profile := range profiles {
+		if profile.InterfaceName == "" || seen[profile.InterfaceName] {
+			continue
+		}
+		seen[profile.InterfaceName] = true
+		interfaces = append(interfaces, profile.InterfaceName)
+	}
+	sort.Strings(interfaces)
+
+	for _, name := range interfaces {
+		lines = append(lines, fmt.Sprintf("%s ALL=(root) NOPASSWD: %s tunnel up %s, %s tunnel down %s",
+			username, HelperPath, name, HelperPath, name))
+	}
+	lines = append(lines, "")
+	return strings.Join(lines, "\n")
 }
 
 // ValidateSudoers refuses to install a rule visudo rejects. A malformed file in
 // /etc/sudoers.d breaks every sudo on the machine, including the one needed to
 // remove it.
 func ValidateSudoers(rule string) error {
-	scratch, err := os.MkdirTemp("", "wiregard-sudoers-")
+	scratch, err := os.MkdirTemp("", "microtunnel-sudoers-")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(scratch)
 
-	staged := filepath.Join(scratch, "xprem-vpn")
+	staged := filepath.Join(scratch, "mymicrotunnel")
 	if err := os.WriteFile(staged, []byte(rule), 0o600); err != nil {
 		return err
 	}
@@ -304,12 +406,16 @@ func ValidateSudoers(rule string) error {
 // WriteRootFiles is the only part that needs root: the private key, the tunnel
 // config, the sudoers rule, and — when asked for — the supervisor daemon.
 func WriteRootFiles(s Settings, username string, asRoot bool) error {
-	rule := SudoersRule(s, username)
+	// Every profile, not just this one: the sudoers file and the supervisor
+	// are machine-wide, and writing them from one profile alone would revoke
+	// the others.
+	rule := SudoersFile(withProfile(AllProfileSettings(), s), username)
 	if err := ValidateSudoers(rule); err != nil {
 		return err
 	}
 
-	staged := filepath.Join(stagingDir(), "client.key")
+	staged := stagedKeyPath(s.ProfileName)
+	keyPath := s.ClientKeyPath()
 	writes := []struct {
 		content string
 		path    string
@@ -323,10 +429,10 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 	// gateway trusting a public key whose private half no longer exists: the
 	// tunnel comes up, sends, and is silently dropped at the far end as an
 	// unknown peer.
-	if asRoot && sys.Exists(ClientKeyPath) {
+	if asRoot && sys.Exists(keyPath) {
 		if _, err := os.Stat(staged); err == nil {
 			os.Remove(staged)
-			ui.Warn("Keeping the existing %s; the newly generated key was discarded.", ClientKeyPath)
+			ui.Warn("Keeping the existing %s; the newly generated key was discarded.", keyPath)
 		}
 	}
 
@@ -335,7 +441,7 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 			content string
 			path    string
 			mode    string
-		}{string(content), ClientKeyPath, "0600"})
+		}{string(content), keyPath, "0600"})
 	}
 
 	for _, write := range writes {
@@ -356,7 +462,9 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 
 	os.Remove(staged)
 
-	if !s.Supervise {
+	// One daemon watches every supervised profile, so the question is not
+	// "does this profile want supervision" but "does any of them".
+	if !AnySupervised(withProfile(AllProfileSettings(), s)) {
 		// Removed rather than left running: turning supervision off has to
 		// actually turn it off, or the daemon goes on reconciling a deployment
 		// the user has changed their mind about.
@@ -368,7 +476,7 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 		// without another sudo, and doing it here keeps the number of password
 		// prompts at the one the user has already answered.
 		if err := sys.WriteAsRoot(
-			SupervisorPlist(s, SupervisorExecutable, DesiredStatePath()),
+			SupervisorPlist(SupervisorExecutable, ProfilesDir()),
 			SupervisorPlistPath, "0644"); err != nil {
 			return err
 		}
@@ -378,7 +486,32 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 		}
 		return nil
 	}
-	return InstallSupervisor(s, DesiredStatePath())
+	return InstallSupervisor(ProfilesDir())
+}
+
+// withProfile is the list of every profile on the machine with this one's
+// current settings in it, whether or not it has been written to disk yet. The
+// machine-wide files are generated from it, so a first install of a profile
+// has to appear there before its own settings exist.
+func withProfile(all []Settings, s Settings) []Settings {
+	merged := make([]Settings, 0, len(all)+1)
+	for _, candidate := range all {
+		if candidate.ProfileName == s.ProfileName {
+			continue
+		}
+		merged = append(merged, candidate)
+	}
+	return append(merged, s)
+}
+
+// AnySupervised reports whether the machine needs the daemon at all.
+func AnySupervised(profiles []Settings) bool {
+	for _, profile := range profiles {
+		if profile.Supervise {
+			return true
+		}
+	}
+	return false
 }
 
 // InstallApp is a no-op when the package already placed the app; it only builds
@@ -387,7 +520,7 @@ func InstallApp(repoRoot string) {
 	// An empty root means this is the installed copy rather than one running
 	// from a checkout. Joining "" with "menubar" produces a *relative* path,
 	// which resolves against whatever directory the command happened to be run
-	// from — so running /usr/local/bin/wiregard-mini-vpn while sitting in a
+	// from — so running /usr/local/bin/mymicrotunnel while sitting in a
 	// checkout made it try to rebuild the app and copy it over the signed
 	// bundle the package had just installed.
 	menubarDir := ""
@@ -416,9 +549,9 @@ func InstallApp(repoRoot string) {
 		ui.Fail("The app did not build.")
 	}
 
-	sys.Run("/usr/bin/pkill", "-f", "XpremVpn.app/Contents/MacOS/XpremVpn")
+	sys.Run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
 	os.RemoveAll(InstalledAppPath)
-	if result := sys.Run("cp", "-R", filepath.Join(menubarDir, "build", "XpremVpn.app"), "/Applications/"); !result.OK() {
+	if result := sys.Run("cp", "-R", filepath.Join(menubarDir, "build", "MyMicroTunnel.app"), "/Applications/"); !result.OK() {
 		ui.Fail("Could not copy the app into /Applications: %s", result.Output)
 	}
 	ui.Done("%s", InstalledAppPath)
@@ -430,7 +563,7 @@ func RegisterLoginItem() {
 	// installed, the tunnel's state at boot comes from the desired-state file
 	// instead, which is the user's own last decision rather than a default.
 	sys.Run("osascript", "-e",
-		`tell application "System Events" to delete (every login item whose name is "XpremVpn")`)
+		`tell application "System Events" to delete (every login item whose name is "MyMicroTunnel")`)
 	result := sys.Run("osascript", "-e",
 		`tell application "System Events" to make login item at end with properties {path:"`+InstalledAppPath+`", hidden:true}`)
 	if !result.OK() {

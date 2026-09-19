@@ -21,6 +21,7 @@ func valid() Settings {
 	s.GatewaySubnetIDs = s.SubnetIDs
 	s.RouteTableIDs = []string{"rtb-aaa"}
 	s.HostedZoneID = "Z123456789"
+	s.StackName = DefaultStackName("123456789012", s.Region)
 	return s
 }
 
@@ -44,7 +45,7 @@ func TestValidateRejects(t *testing.T) {
 		"no region":              {func(s *Settings) { s.Region = "" }, "no region"},
 		"a region that is not":   {func(s *Settings) { s.Region = "us-east" }, "is not a region name"},
 		"a stack name with a slash": {
-			func(s *Settings) { s.StackName = "xprem/vpn" },
+			func(s *Settings) { s.StackName = "microtunnel/vpn" },
 			"must start with a letter",
 		},
 		"a port that is not a number": {func(s *Settings) { s.ServicePort = "http" }, "is not a port number"},
@@ -191,7 +192,7 @@ func TestAppConfigCarriesWhatTheAppNeedsAndNothingElse(t *testing.T) {
 		t.Fatalf("writing the app config: %v", err)
 	}
 
-	content, err := os.ReadFile(AppConfigPath())
+	content, err := os.ReadFile(ProfileConfigPath(s.ProfileName))
 	if err != nil {
 		t.Fatalf("reading it back: %v", err)
 	}
@@ -208,7 +209,10 @@ func TestAppConfigCarriesWhatTheAppNeedsAndNothingElse(t *testing.T) {
 	}
 	// The menu bar app has no business knowing about the AWS account, and the
 	// file is world-readable.
-	for _, key := range []string{"profile", "region", "hostedZoneId", "vpcId", "stackName"} {
+	// The account itself is still none of the app's business. The region, the
+	// AWS profile name and the stack are: waking a switched-off gateway runs
+	// through this tool and has to know which deployment to wake.
+	for _, key := range []string{"hostedZoneId", "vpcId", "subnetIds", "serverPublicKey", "accountId"} {
 		if _, present := written[key]; present {
 			t.Errorf("the app config leaks %s", key)
 		}
@@ -258,5 +262,31 @@ func TestSettingsRoundTripThroughTheStagingFile(t *testing.T) {
 func TestHostnameIsNeverEmpty(t *testing.T) {
 	if Hostname() == "" {
 		t.Error("a workstation with no name would be an unlabelled peer")
+	}
+}
+
+// The hostname has to sit inside a zone, not over it. Given a bare
+// "example.com" the installer would find the zone authoritative for it and
+// then write the apex — taking over the customer's own website, which is
+// usually what a bare domain points at.
+func TestValidateRequiresAHostPartInTheHostname(t *testing.T) {
+	s := valid()
+	s.DomainName = "example.com"
+
+	err := s.Validate()
+	if err == nil {
+		t.Fatal("a bare domain was accepted as the hostname to serve")
+	}
+	if !strings.Contains(err.Error(), "three labels") {
+		t.Errorf("the refusal does not explain what is needed: %v", err)
+	}
+
+	// Three labels, and more than three, are both fine: a zone can be
+	// delegated several levels down.
+	for _, hostname := range []string{"updates.example.com", "updates.eu.example.com"} {
+		s.DomainName = hostname
+		if err := s.Validate(); err != nil {
+			t.Errorf("%s was rejected: %v", hostname, err)
+		}
 	}
 }

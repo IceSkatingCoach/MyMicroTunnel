@@ -1,34 +1,43 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Menu bar switch for the WireGuard tunnel that carries this deployment's
-// hostname from the AWS Network Load Balancer to the service on this machine.
+// Menu bar switch for the WireGuard tunnels that carry this machine's
+// deployments from their AWS Network Load Balancers to the services here.
 //
-// The tunnel is deliberately not held up by a daemon that ignores the user: it
-// should be up only while someone wants the on-premises deployment reachable,
-// and down the rest of the time. This app is that switch.
+// A tunnel is deliberately not held up by a daemon that ignores the user: it
+// should be up only while someone wants that deployment reachable, and down the
+// rest of the time. This app is that switch, once per VPN profile.
 //
 // When the installer was asked for it, a LaunchDaemon watches the desired-state
-// file this app writes and restores that state after a reboot or a sleep. The
-// switch is still the only thing that decides; the daemon only remembers.
+// files this app writes and restores those states after a reboot or a sleep.
+// The switch is still the only thing that decides; the daemon only remembers.
 //
-// Privileges: moving the tunnel has to happen as root. Rather than prompting
+// Privileges: moving a tunnel has to happen as root. Rather than prompting
 // for a password on every toggle, the app shells out through `sudo -n` to the
-// helper in /Library/PrivilegedHelperTools, which the /etc/sudoers.d/xprem-vpn
-// drop-in allows for those two exact command lines. Without that drop-in every
-// toggle fails with a "password is required" message surfaced in the menu,
-// which is the intended failure mode: no silent privilege grab.
+// helper in /Library/PrivilegedHelperTools, which the /etc/sudoers.d/mymicrotunnel
+// drop-in allows for those two exact command lines per interface. Without that
+// drop-in every toggle fails with a "password is required" message surfaced in
+// the menu, which is the intended failure mode: no silent privilege grab.
 //
 // The helper is deliberately not the copy in /usr/local/bin. That directory is
 // one Homebrew takes ownership of on Intel Macs, and a passwordless root grant
 // on a file the user can overwrite is not a grant, it is a root shell.
+//
+// Waking is the one thing here that talks to AWS, and it does it by running the
+// same helper *without* sudo — as the user, whose ~/.aws holds the profile. A
+// deployment with an idle timeout switches its gateway off after a quiet spell,
+// so connecting to one has to ask for the gateway back before there is anything
+// at the far end to handshake with.
 
 import AppKit
 import Sparkle
 
-/// Settings the installer writes, so one deployment's addresses and hostname
-/// are not compiled into the binary. The defaults match the CloudFormation
-/// stack's own defaults, which keeps a hand-built copy of the app working with
-/// no config file present.
+/// One VPN profile as the installer described it, so no deployment's addresses
+/// or hostname are compiled into the binary. The defaults match the
+/// CloudFormation stack's own defaults, which keeps a hand-built copy of the
+/// app working with no config file present.
 struct Tunnel: Decodable {
+    /// Which deployment on this machine. One Mac can be behind several.
+    var profileName = "default"
+
     var interfaceName = "wg0"
 
     /// Address wg-quick assigns to this machine. Its presence on any utun
@@ -41,7 +50,7 @@ struct Tunnel: Decodable {
 
     /// The only binary the sudoers rule allows, read from the config rather
     /// than compiled in so the app and the rule cannot disagree about it.
-    var helperPath = "/Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper"
+    var helperPath = "/Library/PrivilegedHelperTools/ca.maragato.mymicrotunnel.helper"
 
     /// Empty until an install has written one. There is no sensible default:
     /// the hostname belongs to whoever deployed the stack.
@@ -54,32 +63,39 @@ struct Tunnel: Decodable {
 
     /// Where this app records what the user last asked for. Writable without
     /// any privilege, which is the point: root reads it, the user writes it.
-    var desiredStatePath = Tunnel.defaultDesiredStatePath
+    var desiredStatePath = Tunnel.profilesDirectory
+        .appendingPathComponent("default/desired-state").path
+
+    /// Shown in the menu so the ports a deployment publishes are visible
+    /// without opening the AWS console.
+    var tcpPorts: [String] = []
+
+    /// Non-zero when the gateway switches itself off after this many quiet
+    /// minutes, which is what makes waking necessary before a connect.
+    var idleTimeoutMinutes = 0
 
     static let supportDirectory = FileManager.default
         .homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/XpremVpn")
+        .appendingPathComponent("Library/Application Support/MyMicroTunnel")
 
-    static let configURL = supportDirectory.appendingPathComponent("config.json")
-
-    static let defaultDesiredStatePath =
-        supportDirectory.appendingPathComponent("desired-state").path
+    static let profilesDirectory = supportDirectory.appendingPathComponent("profiles")
 
     // Decoded key by key rather than by the compiler's synthesised initialiser.
     //
     // That initialiser requires *every* key to be present: a property's default
     // value is used when you write `Tunnel()`, not when a key is missing from
     // the JSON. So the moment a new field is added here, every config written by
-    // an older version fails to decode — not partially, entirely — and
-    // `Tunnel.current` falls back to compiled defaults. The switch then drives
-    // the wrong interface at the wrong address through the wrong helper, with
-    // nothing logged and nothing shown.
+    // an older version fails to decode — not partially, entirely — and the app
+    // falls back to compiled defaults. The switch then drives the wrong
+    // interface at the wrong address through the wrong helper, with nothing
+    // logged and nothing shown.
     //
     // That is a live hazard now that updates install themselves: the config on
     // disk is always at least one version behind the app that reads it.
     private enum CodingKeys: String, CodingKey {
-        case interfaceName, clientAddress, gatewayAddress, helperPath
+        case profileName, interfaceName, clientAddress, gatewayAddress, helperPath
         case healthCheckUrl, serviceUrl, supervised, desiredStatePath
+        case tcpPorts, idleTimeoutMinutes
     }
 
     init() {}
@@ -87,6 +103,9 @@ struct Tunnel: Decodable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
 
+        if let value = try values.decodeIfPresent(String.self, forKey: .profileName) {
+            profileName = value
+        }
         if let value = try values.decodeIfPresent(String.self, forKey: .interfaceName) {
             interfaceName = value
         }
@@ -111,16 +130,38 @@ struct Tunnel: Decodable {
         if let value = try values.decodeIfPresent(String.self, forKey: .desiredStatePath) {
             desiredStatePath = value
         }
+        if let value = try values.decodeIfPresent([String].self, forKey: .tcpPorts) {
+            tcpPorts = value
+        }
+        if let value = try values.decodeIfPresent(Int.self, forKey: .idleTimeoutMinutes) {
+            idleTimeoutMinutes = value
+        }
     }
 
-    static let current: Tunnel = {
-        guard let data = try? Data(contentsOf: configURL),
-              let decoded = try? JSONDecoder().decode(Tunnel.self, from: data)
-        else {
-            return Tunnel()
+    /// Every profile installed on this machine.
+    ///
+    /// A profile with an unreadable config is skipped rather than replaced with
+    /// defaults: guessing wg0 at 10.100.0.2 for a deployment that uses neither
+    /// would put a switch in the menu that moves somebody else's tunnel.
+    static func installed() -> [Tunnel] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: profilesDirectory, includingPropertiesForKeys: nil)) ?? []
+
+        var found: [Tunnel] = []
+        for directory in contents.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+            let config = directory.appendingPathComponent("config.json")
+            guard let data = try? Data(contentsOf: config),
+                  var decoded = try? JSONDecoder().decode(Tunnel.self, from: data)
+            else {
+                continue
+            }
+            if decoded.profileName.isEmpty {
+                decoded.profileName = directory.lastPathComponent
+            }
+            found.append(decoded)
         }
-        return decoded
-    }()
+        return found
+    }
 
     var healthCheckURL: URL? { healthCheckUrl.isEmpty ? nil : URL(string: healthCheckUrl) }
 
@@ -128,8 +169,8 @@ struct Tunnel: Decodable {
     /// it always, supervised or not, means turning supervision on afterwards
     /// starts from the right state instead of from nothing.
     func recordDesiredState(_ up: Bool) {
-        try? FileManager.default.createDirectory(
-            at: Tunnel.supportDirectory, withIntermediateDirectories: true)
+        let directory = URL(fileURLWithPath: desiredStatePath).deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try? (up ? "up\n" : "down\n").write(
             toFile: desiredStatePath, atomically: true, encoding: .utf8)
     }
@@ -140,13 +181,9 @@ struct Tunnel: Decodable {
 /// release number rather than a hash that does not order.
 var appVersion: String {
     let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
-    let commit = Bundle.main.object(forInfoDictionaryKey: "XpremBuildCommit") as? String ?? ""
+    let commit = Bundle.main.object(forInfoDictionaryKey: "MyMicroTunnelBuildCommit") as? String ?? ""
     return commit.isEmpty ? short : "\(short) (\(commit))"
 }
-
-/// Read once at launch. Changing the deployment means re-running the installer,
-/// which rewrites the file and is expected to restart the app.
-let tunnel = Tunnel.current
 
 struct CommandResult {
     let status: Int32
@@ -187,11 +224,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private var pollTimer: Timer?
 
-    private var isConnected = false
-    /// Set while a wg-quick call is in flight, so the menu can disable the
-    /// toggle instead of letting two of them overlap.
-    private var isBusy = false
-    private var lastError: String?
+    /// Re-read on every poll rather than once at launch: installing a second
+    /// profile while the app is running should put it in the menu, not require
+    /// a quit and relaunch.
+    private var profiles: [Tunnel] = []
+    private var connected: Set<String> = []
+
+    /// Names of the profiles with a helper call in flight, so each switch can
+    /// be disabled on its own instead of freezing the whole menu.
+    private var busy: Set<String> = []
+    private var lastError: [String: String] = [:]
     /// Held so the window is not deallocated the moment it is shown.
     private var setupController: SetupWindowController?
 
@@ -237,9 +279,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             Task { @MainActor in self.refreshState() }
         }
 
-        // No config file means nothing has been deployed yet, so the first run
+        // No profile means nothing has been deployed yet, so the first run
         // opens setup instead of leaving a switch that toggles nothing.
-        if !FileManager.default.fileExists(atPath: Tunnel.configURL.path) {
+        if profiles.isEmpty {
             openSetup()
         }
     }
@@ -247,23 +289,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - State
 
     private func refreshState() {
-        let result = run("/sbin/ifconfig", [])
-        isConnected = result.output.contains(tunnel.clientAddress)
+        profiles = Tunnel.installed()
+
+        // One ifconfig for every profile rather than one each: the addresses
+        // are all in the same output, and this runs every three seconds.
+        let addresses = run("/sbin/ifconfig", []).output
+        connected = Set(profiles.filter { addresses.contains($0.clientAddress) }.map(\.profileName))
+
         updateStatusItemImage()
     }
+
+    private func isConnected(_ profile: Tunnel) -> Bool { connected.contains(profile.profileName) }
+    private func isBusy(_ profile: Tunnel) -> Bool { busy.contains(profile.profileName) }
 
     private func updateStatusItemImage() {
         guard let button = statusItem.button else { return }
 
-        let symbol = isConnected ? "lock.shield.fill" : "lock.shield"
-        let description = isConnected ? "xprem VPN connected" : "xprem VPN disconnected"
+        // The icon is the machine's state, not one profile's: filled when any
+        // tunnel is up, because that is the question somebody glancing at the
+        // menu bar is asking.
+        let anyConnected = !connected.isEmpty
+        let symbol = anyConnected ? "lock.shield.fill" : "lock.shield"
+        let description = anyConnected ? "MyMicroTunnel connected" : "MyMicroTunnel disconnected"
         let image = NSImage(systemSymbolName: symbol, accessibilityDescription: description)
         // Template images follow the menu bar through light, dark and tinted
         // appearances instead of staying one fixed colour.
         image?.isTemplate = true
 
         button.image = image
-        button.appearsDisabled = isBusy
+        button.appearsDisabled = !busy.isEmpty
     }
 
     // MARK: - Menu
@@ -273,58 +327,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshState()
         menu.removeAllItems()
 
-        let state: String
-        if isBusy {
-            state = "Working…"
-        } else if isConnected {
-            state = "Connected — \(tunnel.clientAddress)"
-        } else {
-            state = "Disconnected"
+        if profiles.isEmpty {
+            menu.addItem(disabledItem("Nothing deployed yet"))
         }
-        menu.addItem(disabledItem(state))
 
-        if let lastError {
-            menu.addItem(.separator())
-            menu.addItem(disabledItem("Last error:"))
-            for line in lastError.split(separator: "\n").prefix(4) {
-                menu.addItem(disabledItem("  \(line)"))
+        for (index, profile) in profiles.enumerated() {
+            if index > 0 {
+                menu.addItem(.separator())
             }
+            addItems(for: profile, to: menu, showName: profiles.count > 1)
         }
 
         menu.addItem(.separator())
 
-        if tunnel.supervised {
-            menu.addItem(disabledItem("Restored after a reboot"))
-        }
-
-        let toggle = NSMenuItem(
-            title: isConnected ? "Disconnect" : "Connect",
-            action: #selector(toggleTunnel),
-            keyEquivalent: "c"
-        )
-        toggle.target = self
-        toggle.isEnabled = !isBusy
-        menu.addItem(toggle)
-
-        let test = NSMenuItem(title: "Test tunnel", action: #selector(testTunnel), keyEquivalent: "t")
-        test.target = self
-        test.isEnabled = isConnected && !isBusy
-        menu.addItem(test)
-
-        let open = NSMenuItem(title: "Open health check", action: #selector(openHealthCheck), keyEquivalent: "h")
-        open.target = self
-        // Nothing has been deployed yet, so there is no hostname to open.
-        open.isEnabled = tunnel.healthCheckURL != nil
-        menu.addItem(open)
-
         let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: ",")
         setup.target = self
-        setup.isEnabled = !isBusy
+        setup.isEnabled = busy.isEmpty
         menu.addItem(setup)
 
         let uninstall = NSMenuItem(title: "Uninstall…", action: #selector(uninstall), keyEquivalent: "")
         uninstall.target = self
-        uninstall.isEnabled = !isBusy
+        uninstall.isEnabled = busy.isEmpty
         menu.addItem(uninstall)
 
         if let updater {
@@ -338,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(disabledItem("Xprem VPN \(appVersion)"))
+        menu.addItem(disabledItem("MyMicroTunnel \(appVersion)"))
         if updater == nil {
             menu.addItem(disabledItem("Built without an update feed"))
         }
@@ -348,42 +371,142 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(quit)
     }
 
+    /// One profile's block of the menu.
+    ///
+    /// The profile's name is only shown when there is more than one: a machine
+    /// with a single deployment should read exactly as it did before profiles
+    /// existed, because for most people that is still the whole story.
+    private func addItems(for profile: Tunnel, to menu: NSMenu, showName: Bool) {
+        if showName {
+            menu.addItem(disabledItem(profile.profileName))
+        }
+
+        let state: String
+        if isBusy(profile) {
+            state = "Working…"
+        } else if isConnected(profile) {
+            state = "Connected — \(profile.clientAddress)"
+        } else {
+            state = "Disconnected"
+        }
+        menu.addItem(disabledItem(showName ? "  \(state)" : state))
+
+        if let error = lastError[profile.profileName] {
+            menu.addItem(disabledItem("Last error:"))
+            for line in error.split(separator: "\n").prefix(4) {
+                menu.addItem(disabledItem("  \(line)"))
+            }
+        }
+
+        if profile.supervised {
+            menu.addItem(disabledItem("  Restored after a reboot"))
+        }
+        if profile.idleTimeoutMinutes > 0 {
+            menu.addItem(disabledItem("  Gateway sleeps after \(profile.idleTimeoutMinutes) idle minutes"))
+        }
+        if !profile.tcpPorts.isEmpty {
+            menu.addItem(disabledItem("  Also published: TCP \(profile.tcpPorts.joined(separator: ", "))"))
+        }
+
+        // The key equivalents belong to the first profile only. Two menu items
+        // sharing one shortcut means the shortcut picks one of them at random,
+        // which for a Connect item is the wrong tunnel.
+        let first = profile.profileName == profiles.first?.profileName
+
+        let toggle = NSMenuItem(
+            title: isConnected(profile) ? "Disconnect" : "Connect",
+            action: #selector(toggleTunnel(_:)),
+            keyEquivalent: first ? "c" : ""
+        )
+        toggle.target = self
+        toggle.isEnabled = !isBusy(profile)
+        toggle.representedObject = profile.profileName
+        menu.addItem(toggle)
+
+        let test = NSMenuItem(title: "Test tunnel", action: #selector(testTunnel(_:)),
+                              keyEquivalent: first ? "t" : "")
+        test.target = self
+        test.isEnabled = isConnected(profile) && !isBusy(profile)
+        test.representedObject = profile.profileName
+        menu.addItem(test)
+
+        // Only for a deployment that can actually be asleep. On one that is
+        // always running this would be a button that does nothing.
+        if profile.idleTimeoutMinutes > 0 {
+            let wake = NSMenuItem(title: "Wake gateway", action: #selector(wakeGateway(_:)),
+                                  keyEquivalent: "")
+            wake.target = self
+            wake.isEnabled = !isBusy(profile)
+            wake.representedObject = profile.profileName
+            menu.addItem(wake)
+        }
+
+        let open = NSMenuItem(title: "Open health check", action: #selector(openHealthCheck(_:)),
+                              keyEquivalent: first ? "h" : "")
+        open.target = self
+        // Nothing has been deployed yet, so there is no hostname to open.
+        open.isEnabled = profile.healthCheckURL != nil
+        open.representedObject = profile.profileName
+        menu.addItem(open)
+    }
+
     private func disabledItem(_ title: String) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
         item.isEnabled = false
         return item
     }
 
+    /// The profile a menu item belongs to. Menu items carry the name rather
+    /// than the struct so a rebuilt menu never acts on a stale copy of a
+    /// config that has since been rewritten by an install.
+    private func profile(for sender: Any?) -> Tunnel? {
+        guard let name = (sender as? NSMenuItem)?.representedObject as? String else {
+            return profiles.first
+        }
+        return profiles.first { $0.profileName == name }
+    }
+
     // MARK: - Actions
 
-    @objc private func toggleTunnel() {
-        let wantUp = !isConnected
+    @objc private func toggleTunnel(_ sender: Any?) {
+        guard let profile = profile(for: sender) else { return }
+
+        let wantUp = !isConnected(profile)
         let subcommand = wantUp ? "up" : "down"
-        isBusy = true
-        lastError = nil
+        busy.insert(profile.profileName)
+        lastError[profile.profileName] = nil
         updateStatusItemImage()
 
         // Recorded before the attempt rather than after it. The supervisor
-        // reconciles towards this file, so a wg-quick that fails here is a
+        // reconciles towards this file, so a helper call that fails here is a
         // failure the daemon will retry rather than a decision that was lost.
-        tunnel.recordDesiredState(wantUp)
+        profile.recordDesiredState(wantUp)
 
-        // wg-quick takes about a second; off the main thread so the menu bar
+        // The helper takes about a second; off the main thread so the menu bar
         // does not freeze while it runs.
         Task.detached(priority: .userInitiated) {
+            // A gateway that switched itself off answers no handshake, and
+            // nothing about that looks different from a broken tunnel. Asking
+            // for it back first costs one API call on a deployment that is
+            // already running, and is the difference between connecting and
+            // staring at a switch that will not stay on.
+            if wantUp && profile.idleTimeoutMinutes > 0 {
+                _ = run(profile.helperPath, ["wake", "--vpn-profile", profile.profileName, "--quiet"])
+            }
+
             let result = run(
                 "/usr/bin/sudo",
-                ["-n", tunnel.helperPath, "tunnel", subcommand, tunnel.interfaceName]
+                ["-n", profile.helperPath, "tunnel", subcommand, profile.interfaceName]
             )
             await MainActor.run {
-                self.isBusy = false
-                self.lastError = result.succeeded ? nil : result.output
+                self.busy.remove(profile.profileName)
+                self.lastError[profile.profileName] = result.succeeded ? nil : result.output
                 self.refreshState()
                 if !result.succeeded {
                     self.report(
-                        title: "Could not bring the tunnel \(subcommand)",
+                        title: "Could not bring \(profile.profileName) \(subcommand)",
                         message: result.output.isEmpty
-                            ? "The helper at \(tunnel.helperPath) did not run. Re-run setup to reinstall it."
+                            ? "The helper at \(profile.helperPath) did not run. Re-run setup to reinstall it."
                             : result.output
                     )
                 }
@@ -391,35 +514,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    /// Interface presence only proves wg-quick ran. This proves packets cross.
-    @objc private func testTunnel() {
-        isBusy = true
+    /// Interface presence only proves the helper ran. This proves packets cross.
+    @objc private func testTunnel(_ sender: Any?) {
+        guard let profile = profile(for: sender) else { return }
+
+        busy.insert(profile.profileName)
         updateStatusItemImage()
 
         Task.detached(priority: .userInitiated) {
-            let result = run("/sbin/ping", ["-c", "1", "-t", "3", tunnel.gatewayAddress])
+            let result = run("/sbin/ping", ["-c", "1", "-t", "3", profile.gatewayAddress])
             await MainActor.run {
-                self.isBusy = false
+                self.busy.remove(profile.profileName)
                 self.updateStatusItemImage()
                 if result.succeeded {
                     self.report(
-                        title: "Tunnel is up",
-                        message: "Gateway \(tunnel.gatewayAddress) answered."
+                        title: "\(profile.profileName) is up",
+                        message: "Gateway \(profile.gatewayAddress) answered."
                     )
                 } else {
-                    self.lastError = result.output
+                    self.lastError[profile.profileName] = result.output
                     self.report(
                         title: "Gateway did not answer",
-                        message: "The interface exists but \(tunnel.gatewayAddress) is unreachable. "
-                            + "Reconnect to re-pin the tunnel after an address change."
+                        message: "The interface exists but \(profile.gatewayAddress) is unreachable. "
+                            + (profile.idleTimeoutMinutes > 0
+                                ? "Try \"Wake gateway\", then reconnect."
+                                : "Reconnect to re-pin the tunnel after an address change.")
                     )
                 }
             }
         }
     }
 
-    @objc private func openHealthCheck() {
-        guard let url = tunnel.healthCheckURL else { return }
+    /// Brings a gateway back that switched itself off on its idle timeout.
+    ///
+    /// Run through the helper without sudo: it needs the user's AWS profile,
+    /// which lives in the user's home directory, and it needs no privileges at
+    /// all beyond that.
+    @objc private func wakeGateway(_ sender: Any?) {
+        guard let profile = profile(for: sender) else { return }
+
+        busy.insert(profile.profileName)
+        updateStatusItemImage()
+
+        Task.detached(priority: .userInitiated) {
+            let result = run(profile.helperPath, ["wake", "--vpn-profile", profile.profileName])
+            await MainActor.run {
+                self.busy.remove(profile.profileName)
+                self.updateStatusItemImage()
+                if result.succeeded {
+                    self.report(
+                        title: "Gateway for \(profile.profileName) is up",
+                        message: result.output.isEmpty ? "The gateway is running." : result.output
+                    )
+                } else {
+                    self.lastError[profile.profileName] = result.output
+                    self.report(title: "Could not wake the gateway", message: result.output)
+                }
+            }
+        }
+    }
+
+    @objc private func openHealthCheck(_ sender: Any?) {
+        guard let url = profile(for: sender)?.healthCheckURL else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -441,15 +597,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// for the one day somebody clicks it. The stack is removed from a terminal,
     /// deliberately, with the command spelled out below.
     @objc private func uninstall() {
+        let target = profiles.first?.profileName ?? "default"
+
         let alert = NSAlert()
-        alert.messageText = "Remove Xprem VPN from this Mac?"
+        alert.messageText = profiles.count > 1
+            ? "Remove the \(target) profile from this Mac?"
+            : "Remove MyMicroTunnel from this Mac?"
         alert.informativeText = """
-            This drops the tunnel and removes the app, the background service,             the sudoers rule and the configuration.
+            This drops the tunnel and removes the configuration for \(target). \
+            The app and the background service go too when it is the last profile left.
 
-            It leaves your private key at /etc/wireguard, and it leaves the AWS             stack running — the hostname will keep answering from any other Mac             registered to it, and will keep costing money.
+            It leaves your private key at /etc/wireguard, and it leaves the AWS \
+            stack running — the hostname will keep answering from any other Mac \
+            registered to it, and will keep costing money.
 
-            To remove the AWS side too, run this in a terminal instead:
-                wiregard-mini-vpn uninstall --delete-stack --delete-keys
+            To remove another profile, or the AWS side too, run this in a terminal instead:
+                mymicrotunnel uninstall --vpn-profile NAME --delete-stack --delete-keys
             """
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Remove")
@@ -458,10 +621,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard alert.runModal() == .alertFirstButtonReturn else { return }
 
-        // Started detached and then this app exits, because the uninstall
-        // removes /Applications/XpremVpn.app — which is to say, the bundle this
-        // code is running out of.
-        let command = "\(shellQuote(tunnel.helperPath)) uninstall --non-interactive"
+        let helper = profiles.first?.helperPath ?? Tunnel().helperPath
+        // Started detached and then this app exits, because the uninstall may
+        // remove /Applications/MyMicroTunnel.app — which is to say, the bundle
+        // this code is running out of.
+        let command = "\(shellQuote(helper)) uninstall --non-interactive --vpn-profile \(shellQuote(target))"
         let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
 
         let process = Process()
@@ -481,7 +645,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if process.terminationStatus != 0 {
             report(title: "Uninstall did not finish",
                    message: "Nothing was removed, or only part of it was. Run "
-                          + "`wiregard-mini-vpn uninstall` in a terminal to see why.")
+                          + "`mymicrotunnel uninstall` in a terminal to see why.")
             return
         }
         NSApp.terminate(nil)
@@ -506,7 +670,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 // @MainActor-isolated, and top-level statements are not. Built with
 // -parse-as-library so swiftc honours this instead of script mode.
 @main
-enum XpremVpnApp {
+enum MyMicroTunnelApp {
     @MainActor
     static func main() {
         let application = NSApplication.shared

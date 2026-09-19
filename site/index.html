@@ -4,9 +4,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Xprem VPN — publish your Mac at a real hostname, only when you want to</title>
+<title>MyMicroTunnel — publish your Mac at a real hostname, only when you want to</title>
 <meta name="description" content="Publish a service running on your Mac at a public HTTPS hostname over a WireGuard tunnel into your own AWS account. Free software, GPLv3, about USD 26/month in AWS costs.">
-<meta property="og:title" content="Xprem VPN">
+<meta property="og:title" content="MyMicroTunnel">
 <meta property="og:description" content="Publish a service running on your Mac at a public HTTPS hostname — and switch it off again.">
 <meta property="og:type" content="website">
 <style>
@@ -120,7 +120,7 @@
 
 <header>
   <div class="wrap nav">
-    <span class="brand">Xprem VPN</span>
+    <span class="brand">MyMicroTunnel</span>
     <a href="#how">How it works</a>
     <a href="#install">Install</a>
     <a href="#costs">Costs</a>
@@ -134,7 +134,7 @@
   <div class="hero">
     <h1>Publish your Mac at a real hostname.<br>Switch it off when you're done.</h1>
     <p class="lede">
-      Xprem VPN gives a service running on your laptop a public HTTPS address —
+      MyMicroTunnel gives a service running on your laptop a public HTTPS address —
       <code>updates.example.com</code>, with a real certificate — by routing it through an AWS
       load balancer and a WireGuard tunnel you control.
     </p>
@@ -144,10 +144,23 @@
       The menu bar switch is the only thing that decides whether the world can reach you.
     </p>
     <div class="cta">
-      <a class="btn btn-primary" href="#install">Install it</a>
-      <a class="btn btn-ghost" href="https://github.com/IceSkatingCoach/wiregard_mini_vpn">Source on GitHub</a>
-      <a class="btn btn-ghost" href="mailto:xpremvpn@maragato.ca">xpremvpn@maragato.ca</a>
+      <!-- Re-enable both download buttons — this one and the one in the install
+           steps — after the first `make release`, which is what puts
+           MyMicroTunnel.pkg in the bucket. A link to an object that is not
+           there answers AccessDenied, because the bucket deliberately does not
+           grant ListBucket and S3 will not distinguish "missing" from
+           "forbidden" without it.
+      <a class="btn btn-primary" href="https://downloads.maragato.ca/MyMicroTunnel.pkg">Download for macOS</a>
+      -->
+      <a class="btn btn-primary" href="#install">How it installs</a>
+      <a class="btn btn-ghost" href="https://github.com/IceSkatingCoach/MyMicroTunnel">Source on GitHub</a>
+      <a class="btn btn-ghost" href="mailto:mymicrotunnel@maragato.ca">mymicrotunnel@maragato.ca</a>
     </div>
+    <p class="sub">
+      Universal build for macOS 13 or later, Apple silicon or Intel. Free software under
+      the GPL — the AWS bill is the only thing it costs. <strong>No installer is published
+      yet</strong>; build it from source in the meantime.
+    </p>
   </div>
 
   <div class="diagram">
@@ -274,10 +287,10 @@
       <li>
         <h3>Create AWS credentials for the installer</h3>
         <p>One click, in whichever AWS account you are signed into:</p>
-        <p><a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fxpremvpn-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=xprem-vpn-deploy-role">Create the deploy identity</a></p>
+        <p><a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fmymicrotunnel-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role">Create the deploy identity</a></p>
         <p>That builds an IAM user holding only the permissions the installer uses — you can
            read every one of them in
-           <a href="https://xpremvpn.maragato.ca/deploy-role.yaml">the template</a> before you
+           <a href="https://mymicrotunnel.maragato.ca/deploy-role.yaml">the template</a> before you
            run it. It deliberately does <em>not</em> hand you a secret: stack outputs are
            stored by CloudFormation and readable afterwards, so you create the access key
            yourself from the link in the stack's outputs, and it is shown once.</p>
@@ -289,9 +302,16 @@
            finds it on its own; it only has to exist.</p>
       </li>
       <li>
-        <h3>Open the installer</h3>
-        <p>Signed and notarized. It places the app, a command-line tool, the privileged
-           helper and the tunnel, then opens the setup window by itself.</p>
+        <h3>Build and open the installer</h3>
+        <!-- Restore this with the hero button after the first release:
+        <p><a class="btn btn-primary" href="https://downloads.maragato.ca/MyMicroTunnel.pkg">Download MyMicroTunnel.pkg</a></p>
+        -->
+        <p>No signed package is published yet. Until there is one, clone the repository
+           and run <code>make pkg</code>, which produces
+           <code>build/MyMicroTunnel-&lt;version&gt;.pkg</code>.</p>
+        <p>It places the app, a command-line tool, the privileged helper and the tunnel,
+           then opens the setup window by itself. Once a release is published the app
+           updates itself, so the installer is only ever needed once.</p>
       </li>
       <li>
         <h3>Answer six questions</h3>
@@ -313,15 +333,15 @@
     </ol>
 
     <h3>Or from a terminal</h3>
-<pre><code>wiregard-mini-vpn install --domain updates.example.com --port 3000
-wiregard-mini-vpn status
-wiregard-mini-vpn peers</code></pre>
+<pre><code>mymicrotunnel install --domain updates.example.com --port 3000
+mymicrotunnel status
+mymicrotunnel peers</code></pre>
   </section>
 
   <section id="costs">
     <h2>What it costs</h2>
     <p class="section-lede">
-      Xprem VPN itself is free software and costs nothing. What you pay is AWS, billed to your
+      MyMicroTunnel itself is free software and costs nothing. What you pay is AWS, billed to your
       own account, and you can see every resource it creates in the published CloudFormation
       template before you run it.
     </p>
@@ -360,7 +380,7 @@ wiregard-mini-vpn peers</code></pre>
     <div class="note">
       <strong>The load balancer is most of the bill.</strong> If that is not worth it for your
       use, this is the wrong tool and you should say so — a single instance with a reverse
-      proxy is cheaper and simpler. Xprem VPN is for when you want the traffic ending up on a
+      proxy is cheaper and simpler. MyMicroTunnel is for when you want the traffic ending up on a
       machine you can see, at a name you own, with a switch you control.
     </div>
 
@@ -375,7 +395,7 @@ wiregard-mini-vpn peers</code></pre>
     <h2>Licence</h2>
     <p class="section-lede">
       <span class="pill good">GPL-3.0-or-later</span>
-      Xprem VPN is free software. You may use it, read it, change it, and pass it on — and
+      MyMicroTunnel is free software. You may use it, read it, change it, and pass it on — and
       anyone you give a binary to has the same rights, including the right to the source.
     </p>
 
@@ -432,15 +452,15 @@ wiregard-mini-vpn peers</code></pre>
       <div class="card">
         <h3>Tell us it broke</h3>
         <p>Bug reports are contributions. What you did, what happened, and the output of
-           <code>wiregard-mini-vpn status</code> is plenty to start from.</p>
+           <code>mymicrotunnel status</code> is plenty to start from.</p>
       </div>
     </div>
 
     <h3>Getting in touch</h3>
     <p class="section-lede">
-      Email <a href="mailto:xpremvpn@maragato.ca"><strong>xpremvpn@maragato.ca</strong></a>, or
+      Email <a href="mailto:mymicrotunnel@maragato.ca"><strong>mymicrotunnel@maragato.ca</strong></a>, or
       open an issue or pull request on
-      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn">GitHub</a>.
+      <a href="https://github.com/IceSkatingCoach/MyMicroTunnel">GitHub</a>.
       <code>make check</code> is the gate — vet, formatting, tests, and CloudFormation
       linting over both templates. If that passes, the change is in good shape.
     </p>
@@ -451,14 +471,14 @@ wiregard-mini-vpn peers</code></pre>
 <footer>
   <div class="wrap foot-grid">
     <div>
-      <strong style="color: var(--ink)">Xprem VPN</strong><br>
+      <strong style="color: var(--ink)">MyMicroTunnel</strong><br>
       Free software under the GNU General Public License v3 or later.
     </div>
     <div>
-      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn">Source</a> ·
-      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn/blob/main/LICENSE">Licence</a> ·
-      <a href="https://github.com/IceSkatingCoach/wiregard_mini_vpn/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> ·
-      <a href="mailto:xpremvpn@maragato.ca">xpremvpn@maragato.ca</a>
+      <a href="https://github.com/IceSkatingCoach/MyMicroTunnel">Source</a> ·
+      <a href="https://github.com/IceSkatingCoach/MyMicroTunnel/blob/main/LICENSE">Licence</a> ·
+      <a href="https://github.com/IceSkatingCoach/MyMicroTunnel/blob/main/THIRD-PARTY-NOTICES.md">Third-party notices</a> ·
+      <a href="mailto:mymicrotunnel@maragato.ca">mymicrotunnel@maragato.ca</a>
     </div>
   </div>
 </footer>

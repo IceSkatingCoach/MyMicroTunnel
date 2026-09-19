@@ -29,6 +29,10 @@ import (
 )
 
 type Client struct {
+	// cfg is kept so a narrower client can be derived from it — the wake role
+	// is assumed from these credentials rather than replacing them.
+	cfg aws.Config
+
 	Region  string
 	CFN     *cloudformation.Client
 	SSM     *ssm.Client
@@ -45,6 +49,7 @@ type Client struct {
 
 func newClient(cfg aws.Config) *Client {
 	return &Client{
+		cfg:    cfg,
 		Region: cfg.Region,
 		CFN:    cloudformation.NewFromConfig(cfg),
 		SSM:    ssm.NewFromConfig(cfg),
@@ -341,7 +346,7 @@ func (c *Client) DeployStack(ctx context.Context, name, templateBody string, par
 		return aws.ToString(input[left].ParameterKey) < aws.ToString(input[right].ParameterKey)
 	})
 
-	changeSetName := fmt.Sprintf("wiregard-%d", time.Now().Unix())
+	changeSetName := fmt.Sprintf("microtunnel-%d", time.Now().Unix())
 	if _, err := c.CFN.CreateChangeSet(ctx, &cloudformation.CreateChangeSetInput{
 		StackName:     aws.String(name),
 		ChangeSetName: aws.String(changeSetName),

@@ -35,8 +35,8 @@ func TestTunnelConfigRoutesTheVpcAndTheTunnel(t *testing.T) {
 	if strings.Contains(config, "PrivateKey =") {
 		t.Error("the tunnel config contains a private key")
 	}
-	if !strings.Contains(config, "PostUp = wg set %i private-key "+ClientKeyPath) {
-		t.Error("the tunnel config does not load the key from " + ClientKeyPath)
+	if !strings.Contains(config, "PostUp = wg set %i private-key "+valid().ClientKeyPath()) {
+		t.Error("the tunnel config does not load the key from " + valid().ClientKeyPath())
 	}
 }
 
@@ -52,7 +52,7 @@ func TestTunnelConfigFollowsTheDiscoveredVpc(t *testing.T) {
 }
 
 func TestSudoersRuleGrantsTwoCommandsAndNoMore(t *testing.T) {
-	rule := SudoersRule(valid(), "someone")
+	rule := SudoersFile([]Settings{valid()}, "someone")
 
 	want := "someone ALL=(root) NOPASSWD: " + HelperPath + " tunnel up wg0, " +
 		HelperPath + " tunnel down wg0"
@@ -74,7 +74,7 @@ func TestSudoersRuleGrantsTwoCommandsAndNoMore(t *testing.T) {
 // and become root without a password. The grant has to name a file that account
 // cannot write.
 func TestSudoersRuleNamesNoUserWritableDirectory(t *testing.T) {
-	rule := SudoersRule(valid(), "someone")
+	rule := SudoersFile([]Settings{valid()}, "someone")
 
 	for _, userWritable := range []string{"/opt/homebrew", "/usr/local/bin", "/Users/"} {
 		// The prose above the rule explains the reasoning and is allowed to
@@ -95,12 +95,40 @@ func TestSudoersRuleNamesTheInterfaceTheInstallChose(t *testing.T) {
 	s := valid()
 	s.InterfaceName = "wg7"
 
-	rule := SudoersRule(s, "someone")
+	rule := SudoersFile([]Settings{s}, "someone")
 	if !strings.Contains(rule, "tunnel up wg7") || !strings.Contains(rule, "tunnel down wg7") {
 		t.Errorf("the rule does not name wg7:\n%s", rule)
 	}
 	if strings.Contains(rule, "wg0") {
 		t.Errorf("the rule still names wg0:\n%s", rule)
+	}
+}
+
+// A machine with two profiles needs both grants in the one file, and needs
+// them to be exactly two: a rule appended per install would leave a removed
+// profile's grant behind, and a re-run would leave the same grant twice.
+func TestSudoersFileCoversEveryProfileOnce(t *testing.T) {
+	work := valid()
+	work.ProfileName = "work"
+	work.InterfaceName = "wg0"
+
+	personal := valid()
+	personal.ProfileName = "personal"
+	personal.InterfaceName = "wg1"
+
+	rule := SudoersFile([]Settings{work, personal, work}, "someone")
+
+	var grants []string
+	for _, line := range strings.Split(rule, "\n") {
+		if strings.HasPrefix(line, "someone ALL=") {
+			grants = append(grants, line)
+		}
+	}
+	if len(grants) != 2 {
+		t.Fatalf("%d grants, want one per profile:\n%s", len(grants), rule)
+	}
+	if !strings.Contains(rule, "tunnel up wg0") || !strings.Contains(rule, "tunnel up wg1") {
+		t.Errorf("a profile lost its grant:\n%s", rule)
 	}
 }
 
@@ -111,7 +139,7 @@ func TestValidateSudoersAgreesWithVisudo(t *testing.T) {
 		t.Skip("no visudo on this machine")
 	}
 
-	if err := ValidateSudoers(SudoersRule(valid(), "someone")); err != nil {
+	if err := ValidateSudoers(SudoersFile([]Settings{valid()}, "someone")); err != nil {
 		t.Errorf("visudo rejected a rule the installer would write: %v", err)
 	}
 	if err := ValidateSudoers("this is not a sudoers file\n"); err == nil {

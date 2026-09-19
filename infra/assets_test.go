@@ -2,6 +2,7 @@
 package infra
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -88,6 +89,12 @@ func TestUserDataEscapesBashBraceExpansions(t *testing.T) {
 	// Supplied through Fn::Sub's second argument.
 	known["AllocationId"] = true
 	known["RouteTables"] = true
+	// A resource's own logical id is a legal Fn::Sub reference too — an IAM
+	// policy that scopes itself to this stack's Auto Scaling group is written
+	// that way. Only a name that is neither is a bash expansion that escaped.
+	for _, id := range logicalIDs() {
+		known[id] = true
+	}
 
 	reference := regexp.MustCompile(`\$\{([^}!][^}]*)\}`)
 	for index, line := range strings.Split(Template, "\n") {
@@ -104,6 +111,29 @@ func TestUserDataEscapesBashBraceExpansions(t *testing.T) {
 				index+1, name, name, line)
 		}
 	}
+}
+
+// logicalIDs scans the resources the template declares, the same way
+// Parameters scans its inputs and for the same reason: reading the one file
+// that has to keep working on its own should not need a YAML library.
+func logicalIDs() []string {
+	var (
+		found     []string
+		inSection bool
+	)
+	for _, line := range strings.Split(Template, "\n") {
+		if topLevelKey.MatchString(line) {
+			inSection = topLevelKey.FindStringSubmatch(line)[1] == "Resources"
+			continue
+		}
+		if !inSection {
+			continue
+		}
+		if match := parameterKey.FindStringSubmatch(line); match != nil {
+			found = append(found, match[1])
+		}
+	}
+	return found
 }
 
 // The gateway is a group of one so that a dead instance is replaced rather than
@@ -136,5 +166,147 @@ func TestPeersAreNotAStackParameter(t *testing.T) {
 	}
 	if !strings.Contains(Template, "/wireguard/peers") {
 		t.Error("the template does not point the gateway at a peer list")
+	}
+}
+
+// The idle timeout has to be able to reach zero instances, and a group whose
+// minimum is one cannot. The alarm, the policy and the floor are three halves
+// of one feature: any of them missing leaves a deployment that claims to
+// switch itself off and never does.
+func TestTheIdleTimeoutCanActuallyReachZero(t *testing.T) {
+	for _, expected := range []string{
+		// The group is allowed to empty, but only when the timeout is set.
+		"MinSize: !If [IdleStop, '0', '1']",
+		// Something has to do the emptying, and a CloudWatch alarm cannot
+		// terminate an instance it does not name by id.
+		"AdjustmentType: ExactCapacity",
+		"ScalingAdjustment: 0",
+		// Silence is the signal, and an idle load balancer publishes no
+		// datapoints at all — so missing data has to count as idle.
+		"MetricName: ActiveFlowCount",
+		"TreatMissingData: breaching",
+	} {
+		if !strings.Contains(Template, expected) {
+			t.Errorf("the template does not contain %q, so the gateway would never switch itself off", expected)
+		}
+	}
+}
+
+// The workstation wakes its own gateway, several times a day, unattended. The
+// credential it does that with must not be the one that can delete the
+// deployment.
+func TestTheWakeRoleCanOnlyWake(t *testing.T) {
+	if !strings.Contains(Template, "autoscaling:SetDesiredCapacity") {
+		t.Fatal("the template grants nothing that could bring the gateway back")
+	}
+
+	// Scoped to this stack's own group rather than to every group in the
+	// account.
+	if !strings.Contains(Template, "autoScalingGroupName/${GatewayGroup}") {
+		t.Error("the wake grant is not scoped to this deployment's Auto Scaling group")
+	}
+
+	// The grant is checked by listing it rather than by looking for known-bad
+	// strings: a new action added to this role should have to be justified
+	// here, and a deny-list only catches the ones somebody thought of.
+	start := strings.Index(Template, "PolicyName: wake-the-gateway")
+	if start < 0 {
+		t.Fatal("there is no wake role")
+	}
+	policy := Template[start:]
+	if end := strings.Index(policy, "\n  # --- TLS"); end > 0 {
+		policy = policy[:end]
+	}
+
+	action := regexp.MustCompile(`^\s+(?:- |Action: )((?:autoscaling|ec2|iam|ssm|sts|cloudformation|elasticloadbalancing|s3):[A-Za-z*]+)\s*$`)
+	granted := map[string]bool{}
+	for _, line := range strings.Split(policy, "\n") {
+		if match := action.FindStringSubmatch(line); match != nil {
+			granted[match[1]] = true
+		}
+	}
+
+	allowed := map[string]bool{
+		"autoscaling:SetDesiredCapacity":        true,
+		"autoscaling:DescribeAutoScalingGroups": true,
+		"ec2:DescribeInstances":                 true,
+		"ec2:DescribeInstanceStatus":            true,
+		"ec2:StartInstances":                    true,
+	}
+	for name := range granted {
+		if !allowed[name] {
+			t.Errorf("the wake role may also %s, which waking does not need", name)
+		}
+	}
+	if !granted["autoscaling:SetDesiredCapacity"] {
+		t.Error("the wake role cannot ask for an instance")
+	}
+}
+
+// Ten slots, because the installer sends ten and CloudFormation rejects a
+// change set that names a parameter the template does not declare.
+func TestTheTemplateHasTenPortSlots(t *testing.T) {
+	declared := map[string]bool{}
+	for _, parameter := range Parameters() {
+		declared[parameter.Name] = true
+	}
+	for slot := 1; slot <= 10; slot++ {
+		name := fmt.Sprintf("TcpPort%d", slot)
+		if !declared[name] {
+			t.Errorf("the template does not declare %s", name)
+		}
+		for _, resource := range []string{"TcpTargetGroup%d", "TcpListener%d", "GatewayTcpIngress%d"} {
+			if !strings.Contains(Template, fmt.Sprintf("  "+resource+":", slot)) {
+				t.Errorf("slot %d has no %s", slot, fmt.Sprintf(resource, slot))
+			}
+		}
+	}
+}
+
+// CloudFormation refuses a TemplateBody over 51,200 bytes, and the installer
+// sends this one inline — it is embedded in the binary precisely so a deploy
+// needs no bucket to stage it in.
+//
+// This is a real limit that was hit: adding the ten port slots took the
+// template to 51,287 bytes, which deploys nothing and reports a parameter-free
+// "template body exceeds maximum allowed size" from the first change set. The
+// margin below is there so the next paragraph of prose fails here, in a second,
+// rather than on a customer's first install.
+func TestTemplateFitsCloudFormationsInlineLimit(t *testing.T) {
+	const limit = 51200
+	const margin = 1024
+
+	if size := len(Template); size > limit-margin {
+		t.Errorf("the template is %d bytes; CloudFormation accepts %d inline and this test "+
+			"keeps %d in reserve. Shorten a comment or stage the template in S3.",
+			size, limit, margin)
+	}
+}
+
+// The alias record is deliberately not a resource here.
+//
+// AWS::Route53::RecordSet cannot take over a name that already exists: it
+// fails the stack with "but it already exists" and rolls back a deployment
+// that was minutes from working. A hostname already pointed somewhere is the
+// normal case, so the installer writes the record with a Route53 UPSERT and
+// the template only reports where it should point.
+func TestTheHostnameRecordIsNotOwnedByTheStack(t *testing.T) {
+	// Matched as a resource declaration rather than anywhere in the file: the
+	// comment explaining why there is no such resource names the type too.
+	if strings.Contains(Template, "    Type: AWS::Route53::RecordSet") {
+		t.Error("the template creates the alias record again, so a hostname that already " +
+			"exists will roll the whole deployment back")
+	}
+	for _, output := range []string{"LoadBalancerDnsName:", "LoadBalancerHostedZoneId:"} {
+		if !strings.Contains(Template, output) {
+			t.Errorf("the template does not output %s, so the installer cannot write the alias", output)
+		}
+	}
+	// The zone is the customer's. Creating or deleting one would take their
+	// mail with it.
+	// AWS::Route53::HostedZone::Id is a parameter type and is fine; the
+	// resource type is not.
+	if strings.Contains(Template, "    Type: AWS::Route53::HostedZone\n") {
+		t.Error("the template creates a hosted zone")
 	}
 }

@@ -1,4 +1,4 @@
-# Xprem VPN
+# MyMicroTunnel
 
 Publish a service running on your Mac at a public HTTPS hostname, and turn it
 off again when you are done.
@@ -70,7 +70,7 @@ the default; you can set another during setup.
 The installer deploys into your account, so it needs a key. Give it a dedicated
 one with only the permissions it uses, rather than an administrator key.
 
-**[Create the deploy identity](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fxpremvpn-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=xprem-vpn-deploy-role)** — one click, in whichever
+**[Create the deploy identity](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fmymicrotunnel-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role)** — one click, in whichever
 AWS account you are signed into. It creates an IAM user holding only the
 permissions the installer uses.
 
@@ -86,8 +86,8 @@ forever; creating it yourself means the secret is shown once and stored nowhere.
 
 1. AWS console → **IAM** → **Policies** → **Create policy**.
 2. Choose the **JSON** tab and paste [`docs/deploy-policy.json`](docs/deploy-policy.json).
-3. Name it `XpremVpnDeploy` and create it.
-4. **Users** → **Create user**, name it `xprem-vpn-deploy`, attach that policy.
+3. Name it `MyMicroTunnelDeploy` and create it.
+4. **Users** → **Create user**, name it `mymicrotunnel-deploy`, attach that policy.
 5. Open the user → **Security credentials** → **Create access key** →
    **Command Line Interface**.
 
@@ -104,17 +104,24 @@ intend to serve from: `example.com` if the hostname will be
 `updates.example.com`.
 
 The installer finds the zone itself. It only has to exist, and be public rather
-than private.
+than private — this never creates or deletes a zone, because yours predates
+this deployment and usually carries your mail.
+
+The hostname you serve needs three labels: a host part, the domain and the
+top-level domain. `updates.example.com`, not `example.com` — the bare domain is
+the zone apex, which is normally your website.
+
+If the name already exists in the zone, it is repointed rather than refused.
 
 ## Step 3 — Install the app
 
-Open `XpremVpn.pkg` and follow the installer. It places:
+Open `MyMicroTunnel.pkg` and follow the installer. It places:
 
 ```
-/Applications/XpremVpn.app                                   the menu bar app
-/usr/local/bin/wiregard-mini-vpn                             the same tool, for terminals
-/Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper  the part that needs root
-/usr/local/lib/wiregard-mini-vpn/wireguard-go                the tunnel itself
+/Applications/MyMicroTunnel.app                                   the menu bar app
+/usr/local/bin/mymicrotunnel                             the same tool, for terminals
+/Library/PrivilegedHelperTools/ca.maragato.mymicrotunnel.helper  the part that needs root
+/usr/local/lib/mymicrotunnel/wireguard-go                the tunnel itself
 ```
 
 The app opens by itself when the installer finishes.
@@ -125,10 +132,14 @@ The app opens by itself when the installer finishes.
 | --- | --- |
 | **AWS credentials** | An existing profile, or *Enter an access key* and the two values from step 1 |
 | **Region** | Leave empty to use the region your profile already names |
-| **Stack name** | `xprem-onprem-vpn` unless you are deploying a second one |
-| **Public hostname** | The name to serve, e.g. `updates.example.com` |
-| **Local service port** | The port your service listens on |
+| **VPN profile** | `default`, unless this is a second deployment on the same Mac |
+| **Stack name** | Leave empty. It becomes `microtunnel-<account-id>-<region>` |
+| **Public hostname** | The name to serve, three labels: `updates.example.com` |
+| **Local service port** | The port your service listens on, reached over HTTPS on 443 |
+| **Also publish TCP** | Optional. Up to ten more ports, e.g. `5432, 6379` |
 | **Health check path** | A path that returns 200. Default `/hc` |
+| **Tunnel subnet** | The private range the tunnel uses. Default `10.100.0.0/24` |
+| **Idle timeout (min)** | Optional. Switch the gateway off after this many quiet minutes |
 | **Notify on failure** | Optional. An address to alarm when the gateway dies |
 | **Restore the tunnel after a reboot** | Tick if the hostname should come back on its own |
 
@@ -141,7 +152,7 @@ three things:
 
 - `/etc/wireguard/wg0.conf` — the tunnel's configuration
 - `/etc/wireguard/client.key` — your private key, which never leaves the Mac
-- `/etc/sudoers.d/xprem-vpn` — permission for the menu bar to move the tunnel
+- `/etc/sudoers.d/mymicrotunnel` — permission for the menu bar to move the tunnel
   without asking again
 
 If you ticked *Restore the tunnel after a reboot*, it also installs the
@@ -172,9 +183,13 @@ The padlock in the menu bar is the switch. Filled is connected; outline is not.
 | --- | --- |
 | **Connect / Disconnect** | Raise or drop the tunnel. Disconnected means the hostname stops answering |
 | **Test tunnel** | Pings the gateway. Proves packets cross, not just that an interface exists |
+| **Wake gateway** | Only on a deployment with an idle timeout. Asks AWS for the gateway back |
 | **Open health check** | Opens your hostname in a browser |
 | **Setup…** | Re-run the deployment, or change a setting |
 | **Check for Updates…** | Fetches a new version if there is one |
+
+With more than one VPN profile installed, each one gets its own block in the
+menu with its own switch. The padlock is filled when any of them is up.
 
 If you turned on *Restore the tunnel after a reboot*, the switch is still the
 only thing that decides. The background service remembers your last choice and
@@ -182,27 +197,109 @@ puts it back after a restart or a sleep — including re-pinning the tunnel when
 your home IP address changes, which otherwise leaves an interface that exists
 but carries nothing.
 
+## Publishing more than one port
+
+The hostname answers HTTPS on 443 and forwards to your service port, with TLS
+terminated at the load balancer. Up to ten further ports can be published as
+plain TCP, on the same hostname, forwarded untouched:
+
+```sh
+mymicrotunnel install --domain updates.example.com --port 3000 --tcp-ports 5432,6379
+```
+
+`updates.example.com:5432` then reaches port 5432 on this Mac. These are not
+TLS-terminated and are not health-checked with HTTP — the load balancer only
+checks that the port accepts a connection — because what crosses them is
+whatever protocol you are speaking. **Anything you publish this way is open to
+the internet**: put authentication on it, or do not publish it.
+
+Removing a port is the same command without it: the listener and its target
+group are torn down.
+
+## Letting the gateway sleep
+
+The EC2 instance is most of the bill, and a deployment that is used during
+office hours pays for it around the clock. With an idle timeout, it does not:
+
+```sh
+mymicrotunnel install --domain updates.example.com --idle-timeout 30
+```
+
+After thirty minutes with no connection crossing the load balancer, a CloudWatch
+alarm scales the gateway to zero and the instance goes away. The hostname, the
+certificate, the Elastic IP and your peer registration all stay; only the
+machine in the middle stops existing, which is what it costs to run.
+
+The first connection afterwards has to bring it back. The menu bar does that for
+you when you press **Connect**, and the background service does it when a tunnel
+that should be up has gone quiet. By hand:
+
+```sh
+mymicrotunnel wake                 # and wait for it
+mymicrotunnel wake --wait 0        # just ask, do not wait
+```
+
+Waking takes about two minutes, because the gateway boots from scratch: it
+re-claims the Elastic IP, re-reads its WireGuard identity from SSM, and applies
+the peer list. This is deliberately not done with a stopped instance, which
+would come back faster and keep charging for its disk.
+
+The stack creates an IAM role for exactly this and nothing else. It may set the
+desired capacity of this one Auto Scaling group to one, and read enough to know
+whether that worked. It cannot change the group, launch anything of its own, or
+touch any other deployment — so the credential your Mac uses several times a day
+is not the one that could delete the load balancer.
+
+## Running more than one deployment from one Mac
+
+A VPN profile is one deployment as this Mac sees it: its own stack, its own
+tunnel subnet, its own WireGuard interface, its own published ports, its own
+switch in the menu.
+
+```sh
+mymicrotunnel install --vpn-profile work \
+  --domain updates.example.com --vpn-cidr 10.100.0.0/24
+
+mymicrotunnel install --vpn-profile lab \
+  --domain lab.example.com --vpn-cidr 10.110.0.0/24 --tcp-ports 5432
+```
+
+The second one gets `wg1` without being asked, and refuses to install if it
+would collide with the first on an interface or a tunnel address. Give each
+profile its own `--vpn-cidr` and that cannot happen.
+
+```sh
+mymicrotunnel profile list          # what this Mac holds
+mymicrotunnel profile show lab      # one of them in full
+mymicrotunnel status --vpn-profile lab
+mymicrotunnel uninstall --vpn-profile lab
+```
+
+Every command that acts on a deployment takes `--vpn-profile`, and reads the
+stack, the AWS profile and the region back from what the install recorded, so
+you do not have to repeat them.
+
 ## Adding a second Mac
 
 A deployment can serve from several machines. Run the installer on the second
 one with a different tunnel address:
 
 ```sh
-wiregard-mini-vpn install --domain updates.example.com --client-ip 10.100.0.3
+mymicrotunnel install --domain updates.example.com --client-ip 10.100.0.3
 ```
 
 Adding a machine does not interrupt the ones already serving.
 
 ```sh
-wiregard-mini-vpn peers                        # who is registered
-wiregard-mini-vpn peers --remove 10.100.0.3    # retire one
+mymicrotunnel peers                        # who is registered
+mymicrotunnel peers --remove 10.100.0.3    # retire one
 ```
 
 ## Checking on it
 
 ```sh
-wiregard-mini-vpn status                       # is the tunnel up
-sudo wiregard-mini-vpn tunnel status wg0       # and is anything crossing it
+mymicrotunnel status                       # is the tunnel up
+sudo mymicrotunnel tunnel status wg0       # and is anything crossing it
 ```
 
 The second needs `sudo` because the handshake is only readable by root.
@@ -216,7 +313,7 @@ Almost always the service is bound to loopback. If `curl http://10.100.0.2:3000/
 is refused while `127.0.0.1` works, rebind the service to all interfaces.
 
 **The tunnel connects but nothing crosses it.**
-`sudo wiregard-mini-vpn tunnel status wg0`. A peer with `last handshake never`
+`sudo mymicrotunnel tunnel status wg0`. A peer with `last handshake never`
 means the gateway has not accepted this Mac. Re-run setup.
 
 **"wg-quick up failed", or anything mentioning bash.**
@@ -234,7 +331,7 @@ change is treated as success.
 ## Removing it
 
 ```sh
-wiregard-mini-vpn uninstall
+mymicrotunnel uninstall
 ```
 
 Removes the app, the tunnel, the sudoers rule and the background service, and
@@ -301,8 +398,8 @@ The menu bar moves the tunnel through one `NOPASSWD` rule, scoped to two exact
 command lines:
 
 ```
-<user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper tunnel up wg0, \
-                            /Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper tunnel down wg0
+<user> ALL=(root) NOPASSWD: /Library/PrivilegedHelperTools/ca.maragato.mymicrotunnel.helper tunnel up wg0, \
+                            /Library/PrivilegedHelperTools/ca.maragato.mymicrotunnel.helper tunnel down wg0
 ```
 
 The path matters as much as the arguments. An earlier version pointed at
@@ -322,11 +419,11 @@ root-owned and mode 0600, because it names the key the helper loads.
 
 | Path | What it is |
 | --- | --- |
-| `infra/cloudformation-xprem-onprem-vpn.yaml` | the customer's stack: NLB, TLS, gateway group, alarms |
+| `infra/cloudformation-microtunnel.yaml` | the customer's stack: NLB, TLS, gateway group, alarms |
 | `infra/cloudformation-updates.yaml` | the vendor's stack: S3 and CloudFront for the update feed |
 | `infra/cloudformation-site.yaml` | the vendor's stack: the product website |
 | `infra/cloudformation-deploy-role.yaml` | the customer's one-click IAM identity for installing |
-| `cmd/wiregard-mini-vpn` | installer, uninstaller, tunnel, supervisor |
+| `cmd/mymicrotunnel` | installer, uninstaller, tunnel, supervisor |
 | `cmd/build-pkg` | builds, signs and notarizes the `.pkg` |
 | `cmd/fetch-wireguard`, `cmd/fetch-sparkle` | pinned third-party binaries |
 | `cmd/appcast`, `cmd/publish` | builds, checks and publishes a release |
@@ -342,7 +439,7 @@ root-owned and mode 0600, because it names the key the helper loads.
 make check                            # vet, gofmt, tests, cfn-lint
 make app                              # the universal .app bundle
 make pkg                              # signs if the certificates are present
-make pkg-notarized PROFILE=wiregard   # signs, notarizes, staples
+make pkg-notarized PROFILE=microtunnel   # signs, notarizes, staples
 ```
 
 Everything ships universal — `arm64` and `x86_64` — and the build refuses to
@@ -365,7 +462,7 @@ Store, and Gatekeeper rejects it for a direct download.
 ```sh
 make sparkle-keys                     # once, ever. Back the private half up
 make feed-setup FEED_BUCKET=<name> FEED_DOMAIN=<hostname>   # once
-make release PROFILE=wiregard \
+make release PROFILE=microtunnel \
      APPCAST_FEED_URL=https://<hostname>/appcast.xml \
      SPARKLE_PUBLIC_KEY=<the public half> \
      APPCAST_BASE_URL=https://<hostname>/releases
@@ -397,7 +494,7 @@ higher version number, not a lower one.
 Two things worth knowing:
 
 - **`CFBundleVersion` is the release number, not the commit.** Sparkle compares
-  it, and a git hash does not order. The commit is in `XpremBuildCommit`.
+  it, and a git hash does not order. The commit is in `MyMicroTunnelBuildCommit`.
 - **Losing the Sparkle private key is unrecoverable.** No installed copy could
   ever be updated again. Export it and keep it somewhere durable:
   `./third_party/sparkle/bin/generate_keys -x sparkle-private-key.txt`
@@ -424,7 +521,7 @@ what this builds, is unaffected.
 
 ## Contributing
 
-Patches welcome — <xpremvpn@maragato.ca>.
+Patches welcome — <mymicrotunnel@maragato.ca>.
 
 `make check` is the gate: `go vet`, `gofmt`, the tests, and `cfn-lint` over both
 templates. CI runs the same plus a universal-slice check and `govulncheck`.

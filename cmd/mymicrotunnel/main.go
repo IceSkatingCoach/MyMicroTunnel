@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Command wiregard-mini-vpn deploys the AWS side of the tunnel, configures the
+// Command mymicrotunnel deploys the AWS side of the tunnel, configures the
 // local side, and installs the menu bar app that toggles it.
 //
-//	wiregard-mini-vpn install --domain updates.example.com
-//	wiregard-mini-vpn uninstall [--delete-stack] [--delete-keys]
-//	wiregard-mini-vpn status
-//	wiregard-mini-vpn peers [--stack NAME]
-//	wiregard-mini-vpn version
+//	mymicrotunnel install --domain updates.example.com
+//	mymicrotunnel uninstall [--delete-stack] [--delete-keys]
+//	mymicrotunnel status
+//	mymicrotunnel peers [--stack NAME]
+//	mymicrotunnel version
 //
 // It talks to AWS through the SDK, so the only things it expects to find are
 // WireGuard and, when building from a source checkout, the Swift compiler.
@@ -22,15 +22,16 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/awsops"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/setup"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/sys"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/tunnel"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/ui"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/version"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/setup"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/sys"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/tunnel"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/ui"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/version"
 )
 
 func main() {
@@ -52,6 +53,10 @@ func main() {
 		runStatus(os.Args[2:])
 	case "peers":
 		runPeers(os.Args[2:])
+	case "profile":
+		runProfile(os.Args[2:])
+	case "wake":
+		runWake(os.Args[2:])
 	case "supervise":
 		runSupervise(os.Args[2:])
 	case "tunnel":
@@ -71,12 +76,14 @@ func main() {
 }
 
 func usage() {
-	fmt.Println(`wiregard-mini-vpn ` + version.String() + `
+	fmt.Println(`mymicrotunnel ` + version.String() + `
 
   install    deploy the stack and configure this machine (default)
   uninstall  remove the local install; optionally delete the stack
   status     report whether the tunnel is up
   peers      list or remove the workstations a deployment serves from
+  profile    list this machine's VPN profiles, or show one
+  wake       bring a gateway back after its idle timeout switched it off
   tunnel     up, down or status for the local WireGuard interface
   diagnose   collect everything a support conversation would ask for
   supervise  run the reconcile loop; normally started by launchd
@@ -91,13 +98,17 @@ Flags for install:
   --access-key-id ID     use static credentials instead of a profile
   --secret-access-key K
   --region NAME          defaults to the region the profile names
-  --stack NAME
+  --vpn-profile NAME     which deployment on this machine (default "default")
+  --stack NAME           defaults to microtunnel-<account-id>-<region>
   --domain HOST          the public hostname this deployment serves (required)
   --port NUMBER          port the service listens on, on this machine
+  --tcp-ports LIST       up to 10 more TCP ports to expose, e.g. 5432,6379
+  --idle-timeout MINUTES switch the gateway off after this much silence (0 = never)
   --health-path PATH     path the load balancer polls (default /hc)
   --vpc ID               VPC to deploy into; discovered when omitted
   --hosted-zone ID       Route53 zone for the hostname; discovered when omitted
-  --vpn-cidr CIDR        tunnel subnet (default 10.100.0.0/24)
+  --vpn-cidr CIDR        the tunnel subnet on this machine (default 10.100.0.0/24)
+  --interface NAME       WireGuard interface; picked per profile when omitted
   --client-ip ADDRESS    tunnel address of this machine
   --gateway-ip ADDRESS   tunnel address of the gateway
   --peer-label NAME      how this machine appears in the peer list
@@ -119,13 +130,17 @@ func runInstall(args []string) {
 	loginItem := flags.Bool("login-item", false, "register the app to open at login")
 
 	defaults := setup.Defaults()
+	vpnProfile := flags.String("vpn-profile", defaults.ProfileName, "which deployment on this machine")
 	profile := flags.String("profile", "", "existing AWS profile")
 	accessKeyID := flags.String("access-key-id", "", "static credentials")
 	secretAccessKey := flags.String("secret-access-key", "", "static credentials")
 	region := flags.String("region", "", "AWS region")
-	stackName := flags.String("stack", defaults.StackName, "CloudFormation stack name")
+	stackName := flags.String("stack", "", "CloudFormation stack name")
 	domainName := flags.String("domain", "", "public hostname")
 	servicePort := flags.String("port", defaults.ServicePort, "local service port")
+	tcpPorts := flags.String("tcp-ports", "", "up to 10 more TCP ports to expose through the load balancer")
+	idleTimeout := flags.Int("idle-timeout", 0, "minutes of silence before the gateway is switched off")
+	interfaceName := flags.String("interface", "", "WireGuard interface; picked for the profile when omitted")
 	healthPath := flags.String("health-path", defaults.HealthCheckPath, "load balancer health check path")
 	vpcID := flags.String("vpc", "", "VPC to deploy into")
 	hostedZoneID := flags.String("hosted-zone", "", "Route53 hosted zone id")
@@ -143,7 +158,14 @@ func runInstall(args []string) {
 	ui.SetJSON(*asJSON)
 	interactive := !*nonInteractive
 
+	// A profile that is already installed is the starting point for a re-run,
+	// so an install that only changes the ports does not have to repeat every
+	// other answer.
 	settings := defaults
+	settings.ProfileName = *vpnProfile
+	if stored, err := setup.LoadProfileSettings(*vpnProfile); err == nil {
+		settings = stored
+	}
 	if *settingsPath != "" {
 		if loaded, err := setup.ReadSettings(*settingsPath); err == nil {
 			settings = loaded
@@ -155,6 +177,8 @@ func runInstall(args []string) {
 	// would undo every answer the earlier stage recorded.
 	typed := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { typed[f.Name] = true })
+	applyString(typed, "vpn-profile", vpnProfile, &settings.ProfileName)
+	applyString(typed, "interface", interfaceName, &settings.InterfaceName)
 	applyString(typed, "region", region, &settings.Region)
 	applyString(typed, "stack", stackName, &settings.StackName)
 	applyString(typed, "domain", domainName, &settings.DomainName)
@@ -175,7 +199,23 @@ func runInstall(args []string) {
 	if typed["supervise"] {
 		settings.Supervise = *supervise
 	}
+	if typed["tcp-ports"] {
+		settings.TcpPorts = setup.ParseTcpPorts(*tcpPorts)
+	}
+	if typed["idle-timeout"] {
+		settings.IdleTimeoutMinutes = *idleTimeout
+	}
 	settings.Username = setup.CurrentUsername()
+
+	// A second profile cannot share the first one's interface: both would
+	// write /etc/wireguard/wg0.conf and the second install would take the
+	// first deployment down without saying so.
+	if settings.InterfaceName == "" {
+		settings.InterfaceName = setup.NextFreeInterface(setup.TakenInterfaces(settings.ProfileName))
+		if settings.InterfaceName == "" {
+			ui.Fail("Every WireGuard interface name is taken; remove a profile first.")
+		}
+	}
 
 	ctx := context.Background()
 
@@ -201,7 +241,7 @@ func runInstall(args []string) {
 	}
 
 	if interactive && !*asJSON {
-		fmt.Println("wiregard_mini_vpn installer " + version.String())
+		fmt.Println("MyMicroTunnel installer " + version.String())
 		fmt.Println("\nThis deploys AWS resources into your account that cost roughly")
 		fmt.Println("USD 26/month, and asks for your password to write root-owned files.")
 	}
@@ -219,8 +259,20 @@ func runInstall(args []string) {
 		client := resolveClient(ctx, &settings, interactive, *accessKeyID, *secretAccessKey)
 
 		// Checked once credentials are resolved, because the region may have
-		// come from the profile rather than from a flag.
+		// come from the profile rather than from a flag, and the stack name
+		// from the account.
 		if err := settings.Validate(); err != nil {
+			ui.Fail("%v", err)
+		}
+		// Checked before anything is deployed: two profiles sharing an
+		// interface or a tunnel address both look installed and only one of
+		// them works.
+		if err := settings.ConflictsWithOtherProfiles(); err != nil {
+			ui.Fail("%v", err)
+		}
+		// And against the networks this Mac is attached to right now. A tunnel
+		// that claims the LAN it is sitting on comes up and takes the LAN away.
+		if err := settings.ConflictsWithLocalNetworks(); err != nil {
 			ui.Fail("%v", err)
 		}
 
@@ -228,10 +280,18 @@ func runInstall(args []string) {
 
 		if interactive && !*asJSON {
 			fmt.Println("\n  About to deploy:")
+			fmt.Printf("    profile   %s on %s\n", settings.ProfileName, settings.InterfaceName)
 			fmt.Printf("    stack     %s in %s\n", settings.StackName, settings.Region)
 			fmt.Printf("    hostname  %s\n", settings.ServiceURL())
 			fmt.Printf("    network   %s, subnets %s\n", settings.VpcID, strings.Join(settings.SubnetIDs, ", "))
+			fmt.Printf("    tunnel    %s, this machine at %s\n", settings.VpnCidr, settings.ClientAddress)
 			fmt.Printf("    target    %s:%s on this machine\n", settings.ClientAddress, settings.ServicePort)
+			if len(settings.TcpPorts) > 0 {
+				fmt.Printf("    also TCP  %s\n", strings.Join(settings.TcpPorts, ", "))
+			}
+			if settings.IdleTimeoutMinutes > 0 {
+				fmt.Printf("    idle      off after %d minutes with no traffic\n", settings.IdleTimeoutMinutes)
+			}
 			if !ui.Confirm("Proceed?", true) {
 				ui.Fail("Cancelled.")
 			}
@@ -239,7 +299,7 @@ func runInstall(args []string) {
 
 		clientPublicKey := *clientPublicKeyFlag
 		if clientPublicKey == "" {
-			clientPublicKey = setup.EnsureClientKey(interactive)
+			clientPublicKey = setup.EnsureClientKey(settings, interactive)
 		} else {
 			ui.Step("WireGuard client key")
 			ui.Done("Using the key supplied on the command line")
@@ -253,6 +313,12 @@ func runInstall(args []string) {
 				ui.Fail("Could not save settings to %s: %v", *settingsPath, err)
 			}
 		}
+		// Recorded under the profile as well, so `peers`, `wake`, `diagnose`
+		// and `uninstall` can find this deployment by name instead of being
+		// told the stack again on every command line.
+		if err := setup.SaveProfileSettings(settings); err != nil {
+			ui.Warn("Could not record the profile: %v", err)
+		}
 		ui.Result(map[string]string{
 			"endpoint":        settings.Endpoint,
 			"serverPublicKey": settings.ServerPublicKey,
@@ -260,6 +326,9 @@ func runInstall(args []string) {
 			"region":          settings.Region,
 			"profile":         settings.Profile,
 			"serviceUrl":      settings.ServiceURL(),
+			"vpnProfile":      settings.ProfileName,
+			"interface":       settings.InterfaceName,
+			"wakeRoleArn":     settings.WakeRoleARN,
 		})
 
 		// In the split flow the caller runs the root stage next.
@@ -284,10 +353,13 @@ func runInstall(args []string) {
 	}
 	// An install ends with the tunnel up, so that is what the supervisor should
 	// restore after a reboot until the user says otherwise.
-	if err := setup.SetDesiredState(true); err != nil {
+	if err := setup.SetDesiredState(settings.ProfileName, true); err != nil {
 		ui.Warn("Could not record the desired tunnel state: %v", err)
 	}
-	ui.Done("%s", setup.AppConfigPath())
+	if err := setup.SaveProfileSettings(settings); err != nil {
+		ui.Warn("Could not record the profile: %v", err)
+	}
+	ui.Done("%s", setup.ProfileConfigPath(settings.ProfileName))
 
 	setup.InstallApp(setup.RepoRoot())
 
@@ -306,6 +378,18 @@ func runInstall(args []string) {
 		fmt.Printf("  The padlock shield in the menu bar toggles %s.\n", settings.DomainName)
 	}
 	ui.Done("Installed")
+}
+
+// firstNonEmpty is the precedence every command shares: what was typed, then
+// what the profile recorded, then a last resort. Without it each command
+// grew its own three-line version of the same fallback, and they disagreed.
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // applyString exists because a flag package cannot tell "left at its default"
@@ -328,7 +412,7 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 
 	if accessKeyID != "" && secretAccessKey != "" {
 		if settings.Profile == "" {
-			settings.Profile = "xprem-vpn"
+			settings.Profile = "mymicrotunnel"
 		}
 		if settings.Region == "" && interactive {
 			settings.Region = ui.Ask("Region", "us-east-1")
@@ -345,7 +429,7 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 			ui.Fail("No AWS profile given. Pass --profile, or --access-key-id with --secret-access-key.")
 		}
 		if len(profiles) == 0 {
-			settings.Profile = ui.Ask("Name for the new profile", "xprem-vpn")
+			settings.Profile = ui.Ask("Name for the new profile", "mymicrotunnel")
 			id := ui.Ask("AWS access key id", "")
 			if id == "" {
 				ui.Fail("An access key id is required.")
@@ -391,6 +475,27 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 	}
 	ui.Done("Authenticated as %s", identity)
 
+	// Who the wake role will trust. An assumed-role ARN names a session that
+	// will not exist tomorrow, so it is reduced to the role itself; anything
+	// else — an IAM user, a role ARN already — is used as it stands.
+	if settings.AppPrincipalArn == "" {
+		settings.AppPrincipalArn = awsops.TrustablePrincipal(identity)
+	}
+
+	if account, err := client.AccountID(ctx); err == nil {
+		settings.AccountID = account
+		// Derived here rather than in Defaults(), which cannot know the
+		// account: one fixed default makes the second deployment in an
+		// account collide with the first.
+		if settings.StackName == "" {
+			settings.StackName = setup.DefaultStackName(account, settings.Region)
+			ui.Info("Deploying as %s", settings.StackName)
+		}
+	} else if settings.StackName == "" {
+		ui.Fail("Could not read the account id, so the default stack name cannot be built: %v.\n"+
+			"  Pass --stack with a name of your own.", err)
+	}
+
 	return client
 }
 
@@ -402,30 +507,37 @@ func runUninstall(args []string) {
 	nonInteractive := flags.Bool("non-interactive", false, "never prompt")
 
 	defaults := setup.Defaults()
-	stackName := flags.String("stack", defaults.StackName, "CloudFormation stack name")
-	profile := flags.String("profile", "default", "AWS profile")
+	vpnProfile := flags.String("vpn-profile", defaults.ProfileName, "which deployment on this machine")
+	stackName := flags.String("stack", "", "CloudFormation stack name")
+	profile := flags.String("profile", "", "AWS profile")
 	region := flags.String("region", "", "AWS region")
 
 	_ = flags.Parse(args)
 	ui.SetJSON(*asJSON)
 
 	ctx := context.Background()
-	resolvedRegion := *region
+	// What the install recorded, so an uninstall does not have to be told the
+	// stack, the AWS profile and the region all over again.
+	stored, _ := setup.LoadProfileSettings(*vpnProfile)
+	resolvedStack := firstNonEmpty(*stackName, stored.StackName)
+	resolvedProfile := firstNonEmpty(*profile, stored.Profile, "default")
+	resolvedRegion := firstNonEmpty(*region, stored.Region)
 	if resolvedRegion == "" {
-		resolvedRegion = awsops.ProfileRegion(ctx, *profile)
+		resolvedRegion = awsops.ProfileRegion(ctx, resolvedProfile)
 	}
 
 	options := setup.UninstallOptions{
+		ProfileName:    *vpnProfile,
 		DeleteStack:    *deleteStack,
 		DeleteKeys:     *deleteKeys,
-		StackName:      *stackName,
-		Profile:        *profile,
+		StackName:      resolvedStack,
+		Profile:        resolvedProfile,
 		Region:         resolvedRegion,
 		NonInteractive: *nonInteractive,
 	}
 
 	if !*nonInteractive && !*asJSON {
-		fmt.Println("wiregard_mini_vpn uninstaller")
+		fmt.Println("MyMicroTunnel uninstaller")
 		if !options.DeleteKeys {
 			options.DeleteKeys = ui.Confirm("Also delete /etc/wireguard (tunnel config and private key)?", false)
 		}
@@ -455,41 +567,59 @@ func runUninstall(args []string) {
 func runPeers(args []string) {
 	flags := flag.NewFlagSet("peers", flag.ExitOnError)
 	defaults := setup.Defaults()
-	stackName := flags.String("stack", defaults.StackName, "CloudFormation stack name")
-	profile := flags.String("profile", "default", "AWS profile")
+	vpnProfile := flags.String("vpn-profile", defaults.ProfileName, "which deployment on this machine")
+	stackName := flags.String("stack", "", "CloudFormation stack name")
+	profile := flags.String("profile", "", "AWS profile")
 	region := flags.String("region", "", "AWS region")
 	remove := flags.String("remove", "", "tunnel address of a workstation to retire")
 
 	_ = flags.Parse(args)
 
 	ctx := context.Background()
-	resolvedRegion := *region
+	stored, _ := setup.LoadProfileSettings(*vpnProfile)
+	resolvedStack := firstNonEmpty(*stackName, stored.StackName)
+	resolvedProfile := firstNonEmpty(*profile, stored.Profile, "default")
+	resolvedRegion := firstNonEmpty(*region, stored.Region)
 	if resolvedRegion == "" {
-		resolvedRegion = awsops.ProfileRegion(ctx, *profile)
+		resolvedRegion = awsops.ProfileRegion(ctx, resolvedProfile)
+	}
+	if resolvedStack == "" {
+		ui.Fail("No stack: profile %q is not installed here, so pass --stack.", *vpnProfile)
 	}
 
-	client, err := awsops.LoadProfile(ctx, *profile, resolvedRegion)
+	client, err := awsops.LoadProfile(ctx, resolvedProfile, resolvedRegion)
 	if err != nil {
 		ui.Fail("Could not load AWS credentials: %v", err)
 	}
-	settings := setup.Settings{StackName: *stackName}
+	settings := setup.Settings{StackName: resolvedStack}
 
 	if *remove != "" {
 		if err := client.RemovePeer(ctx, settings.PeersParameter(), *remove); err != nil {
 			ui.Fail("Could not remove %s: %v", *remove, err)
 		}
-		outputs, err := client.StackOutputs(ctx, *stackName)
+		outputs, err := client.StackOutputs(ctx, resolvedStack)
 		if err == nil && outputs["TargetGroupArn"] != "" {
 			// The port is whatever it was registered with; the API matches on
 			// the pair, so a wrong port would leave the target in place.
-			if parameter, found := client.StackParameter(ctx, *stackName, "ServicePort"); found {
+			if parameter, found := client.StackParameter(ctx, resolvedStack, "ServicePort"); found {
 				port := setup.Settings{ServicePort: parameter}.Port()
 				if err := client.DeregisterTarget(ctx, outputs["TargetGroupArn"], *remove, port); err != nil {
 					ui.Warn("Removed from the peer list, but not from the load balancer: %v", err)
 				}
 			}
+			// And from every exposed port's own target group, each of which
+			// would otherwise keep routing to a workstation that has gone.
+			for port, arn := range setup.TcpTargetGroups(outputs) {
+				number, convErr := strconv.Atoi(port)
+				if convErr != nil {
+					continue
+				}
+				if err := client.DeregisterTarget(ctx, arn, *remove, int32(number)); err != nil {
+					ui.Warn("Still registered on TCP %s: %v", port, err)
+				}
+			}
 		}
-		fmt.Printf("Removed %s from %s.\n", *remove, *stackName)
+		fmt.Printf("Removed %s from %s.\n", *remove, resolvedStack)
 		return
 	}
 
@@ -498,7 +628,7 @@ func runPeers(args []string) {
 		ui.Fail("Could not read %s: %v", settings.PeersParameter(), err)
 	}
 	if len(peers) == 0 {
-		fmt.Printf("No workstation is registered for %s.\n", *stackName)
+		fmt.Printf("No workstation is registered for %s.\n", resolvedStack)
 		return
 	}
 	for _, peer := range peers {
@@ -516,28 +646,144 @@ func runPeers(args []string) {
 func runSupervise(args []string) {
 	flags := flag.NewFlagSet("supervise", flag.ExitOnError)
 	defaults := setup.Defaults()
-	statePath := flags.String("state", setup.DesiredStatePath(), "file holding the desired tunnel state")
-	interfaceName := flags.String("interface", defaults.InterfaceName, "WireGuard interface")
-	configPath := flags.String("config", "", "tunnel configuration; defaults to the interface's own")
+	profilesDir := flags.String("profiles", "", "profile store to reconcile; every supervised profile in it")
+	statePath := flags.String("state", "", "single profile: file holding the desired tunnel state")
+	interfaceName := flags.String("interface", defaults.InterfaceName, "single profile: WireGuard interface")
+	configPath := flags.String("config", "", "single profile: tunnel configuration")
+	wakeUser := flags.String("wake-user", "", "user whose AWS profile is used to wake a switched-off gateway")
 	once := flags.Bool("once", false, "reconcile once and exit")
 
 	_ = flags.Parse(args)
 
+	// Neither given: watch the whole store. That is what the installed daemon
+	// asks for, and what somebody debugging by hand almost always means.
+	if *profilesDir == "" && *statePath == "" {
+		*profilesDir = setup.ProfilesDir()
+	}
+
 	setup.Supervise(setup.SuperviseOptions{
+		ProfilesDir:   *profilesDir,
 		StatePath:     *statePath,
 		InterfaceName: *interfaceName,
 		ConfigPath:    *configPath,
+		WakeUser:      *wakeUser,
 		Once:          *once,
 	})
 }
 
+// runProfile is how somebody finds out what this machine is actually holding.
+// A laptop behind three deployments has three interfaces, three tunnel
+// addresses and three stacks, and none of that is guessable from the menu bar.
+func runProfile(args []string) {
+	flags := flag.NewFlagSet("profile", flag.ExitOnError)
+	_ = flags.Parse(args)
+
+	action := "list"
+	if flags.NArg() > 0 {
+		action = flags.Arg(0)
+	}
+
+	switch action {
+	case "list":
+		names := setup.ListProfiles()
+		if len(names) == 0 {
+			fmt.Println("No VPN profile is installed.")
+			return
+		}
+		fmt.Printf("%-16s %-8s %-16s %-14s %s\n", "PROFILE", "IFACE", "ADDRESS", "STATE", "STACK")
+		// AllProfileSettings rather than LoadProfileSettings per name: a
+		// profile migrated from a single-deployment install has an app config
+		// and no settings file yet, and listing it as blank rows is how it
+		// looks like a broken install rather than an upgraded one.
+		byName := map[string]setup.Settings{}
+		for _, s := range setup.AllProfileSettings() {
+			byName[s.ProfileName] = s
+		}
+		for _, name := range names {
+			s := byName[name]
+			state := "down"
+			if tunnel.IsUp(s.InterfaceName) || tunnel.AddressPresent(s.ClientAddress) {
+				state = "up"
+			}
+			fmt.Printf("%-16s %-8s %-16s %-14s %s\n",
+				name, s.InterfaceName, s.ClientAddress, state, s.StackName)
+		}
+
+	case "show":
+		if flags.NArg() < 2 {
+			ui.Fail("Usage: mymicrotunnel profile show NAME")
+		}
+		name := flags.Arg(1)
+		s, err := setup.LoadProfileSettings(name)
+		if err != nil {
+			ui.Fail("No profile called %q: %v", name, err)
+		}
+		fmt.Printf("profile        %s\n", s.ProfileName)
+		fmt.Printf("stack          %s in %s\n", s.StackName, s.Region)
+		fmt.Printf("hostname       %s\n", s.ServiceURL())
+		fmt.Printf("interface      %s\n", s.InterfaceName)
+		fmt.Printf("tunnel subnet  %s (this machine %s, gateway %s)\n", s.VpnCidr, s.ClientAddress, s.GatewayAddress)
+		fmt.Printf("service port   %s\n", s.ServicePort)
+		if len(s.TcpPorts) > 0 {
+			fmt.Printf("exposed TCP    %s\n", strings.Join(s.TcpPorts, ", "))
+		}
+		if s.IdleTimeoutMinutes > 0 {
+			fmt.Printf("idle timeout   %d minutes\n", s.IdleTimeoutMinutes)
+		}
+		fmt.Printf("supervised     %t\n", s.Supervise)
+
+	default:
+		ui.Fail("Unknown profile command %q. Use list or show.", action)
+	}
+}
+
+// runWake brings a gateway back that switched itself off on its idle timeout.
+//
+// It is a subcommand rather than something buried in the menu bar because it
+// is also the answer when the tunnel is down and nobody knows why: waking a
+// gateway that is already running costs one API call and says so.
+func runWake(args []string) {
+	flags := flag.NewFlagSet("wake", flag.ExitOnError)
+	defaults := setup.Defaults()
+	vpnProfile := flags.String("vpn-profile", defaults.ProfileName, "which deployment on this machine")
+	wait := flags.Duration("wait", 4*time.Minute, "how long to wait for the gateway to come back; 0 does not wait")
+	quiet := flags.Bool("quiet", false, "say nothing unless something goes wrong")
+
+	_ = flags.Parse(args)
+
+	settings, err := setup.LoadProfileSettings(*vpnProfile)
+	if err != nil {
+		ui.Fail("No profile called %q: %v", *vpnProfile, err)
+	}
+
+	ctx := context.Background()
+	client, err := awsops.LoadProfile(ctx, settings.Profile, settings.Region)
+	if err != nil {
+		ui.Fail("Could not load AWS credentials: %v", err)
+	}
+
+	report := func(message string) {
+		if !*quiet {
+			fmt.Println(message)
+		}
+	}
+	if err := client.WakeGateway(ctx, awsops.WakeOptions{
+		RoleARN:    settings.WakeRoleARN,
+		GroupName:  settings.GatewayGroupName,
+		Wait:       *wait,
+		OnProgress: report,
+	}); err != nil {
+		ui.Fail("Could not wake the gateway for %s: %v", *vpnProfile, err)
+	}
+}
+
 // runTunnel is what the sudoers rule allows and what the menu bar calls. The
 // argument list is fixed — `tunnel up wg0` — because that exact line is what
-// /etc/sudoers.d/xprem-vpn grants, and anything this accepts beyond it would be
+// /etc/sudoers.d/mymicrotunnel grants, and anything this accepts beyond it would be
 // something the rule did not mean to allow.
 func runTunnel(args []string) {
 	if len(args) < 1 {
-		ui.Fail("Usage: wiregard-mini-vpn tunnel up|down|status [interface] [--config PATH]")
+		ui.Fail("Usage: mymicrotunnel tunnel up|down|status [interface] [--config PATH]")
 	}
 
 	interfaceName := setup.Defaults().InterfaceName
@@ -624,19 +870,22 @@ func reportTunnel(interfaceName, address string) {
 func runDiagnose(args []string) {
 	flags := flag.NewFlagSet("diagnose", flag.ExitOnError)
 	defaults := setup.Defaults()
-	stackName := flags.String("stack", defaults.StackName, "CloudFormation stack name")
-	profile := flags.String("profile", "default", "AWS profile")
+	vpnProfile := flags.String("vpn-profile", defaults.ProfileName, "which deployment on this machine")
+	stackName := flags.String("stack", "", "CloudFormation stack name")
+	profile := flags.String("profile", "", "AWS profile")
 	region := flags.String("region", "", "AWS region; taken from the profile when empty")
 	skipAWS := flags.Bool("no-aws", false, "skip the parts that need AWS credentials")
 	output := flags.String("o", "", "write to this file instead of the terminal")
 
 	_ = flags.Parse(args)
 
+	stored, _ := setup.LoadProfileSettings(*vpnProfile)
 	report := setup.Diagnose(context.Background(), setup.DiagnoseOptions{
-		StackName: *stackName,
-		Profile:   *profile,
-		Region:    *region,
-		SkipAWS:   *skipAWS,
+		ProfileName: *vpnProfile,
+		StackName:   firstNonEmpty(*stackName, stored.StackName),
+		Profile:     firstNonEmpty(*profile, stored.Profile, "default"),
+		Region:      firstNonEmpty(*region, stored.Region),
+		SkipAWS:     *skipAWS,
 	})
 
 	if *output == "" {
@@ -652,11 +901,14 @@ func runDiagnose(args []string) {
 func runStatus(args []string) {
 	flags := flag.NewFlagSet("status", flag.ExitOnError)
 	asJSON := flags.Bool("json", false, "emit NDJSON events")
+	vpnProfile := flags.String("vpn-profile", setup.DefaultProfileName, "which deployment on this machine")
 	_ = flags.Parse(args)
 	ui.SetJSON(*asJSON)
 
-	interfaceName := setup.Defaults().InterfaceName
-	address := setup.InstalledClientAddress()
+	// The installed profile rather than the defaults: a second deployment is
+	// on another interface at another address, and reporting wg0 for it would
+	// say "down" about a tunnel that is up.
+	interfaceName, address := setup.InstalledTunnelOf(*vpnProfile)
 
 	// Asking the interface needs root, because /var/run/wireguard is 0700.
 	// Without it, the address on an interface is the most that can be known.
@@ -670,6 +922,7 @@ func runStatus(args []string) {
 			"connected": fmt.Sprintf("%t", connected),
 			"interface": interfaceName,
 			"address":   address,
+			"profile":   *vpnProfile,
 			"device":    tunnel.Device(interfaceName),
 			"version":   version.String(),
 		})

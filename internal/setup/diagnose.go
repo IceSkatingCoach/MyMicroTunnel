@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/awsops"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/sys"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/tunnel"
-	"github.com/IceSkatingCoach/wiregard_mini_vpn/internal/version"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/sys"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/tunnel"
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/version"
 )
 
 // Diagnose collects, in one place, everything somebody would otherwise have to
@@ -55,6 +55,11 @@ func max(a, b int) int {
 // DiagnoseOptions says how much to gather. The AWS half needs credentials and
 // is skipped without them rather than refused.
 type DiagnoseOptions struct {
+	// ProfileName is which VPN profile to report on. Every profile is listed
+	// whatever this says; the detailed sections describe this one, because a
+	// report that interleaved three tunnels would be unreadable.
+	ProfileName string
+
 	StackName string
 	Profile   string
 	Region    string
@@ -63,19 +68,28 @@ type DiagnoseOptions struct {
 
 func Diagnose(ctx context.Context, options DiagnoseOptions) string {
 	report := &Report{}
-	report.addf("xprem vpn diagnostics — %s", time.Now().Format(time.RFC3339))
-	report.addf("paste this whole thing to xpremvpn@maragato.ca")
+	report.addf("microtunnel vpn diagnostics — %s", time.Now().Format(time.RFC3339))
+	report.addf("paste this whole thing to mymicrotunnel@maragato.ca")
 
-	config := installedTunnel()
+	if options.ProfileName == "" {
+		options.ProfileName = DefaultProfileName
+	}
+	config := installedTunnel(options.ProfileName)
+	settings, _ := LoadProfileSettings(options.ProfileName)
+	if options.StackName == "" {
+		options.StackName = settings.StackName
+	}
 
 	diagnoseMachine(report)
-	diagnoseInstall(report, config)
+	diagnoseProfiles(report, options.ProfileName)
+	diagnoseInstall(report, config, settings)
 	diagnoseTunnel(report, config)
 	diagnoseService(report, config)
 	if !options.SkipAWS {
 		diagnoseAWS(ctx, report, options)
 	}
-	diagnoseSupervisor(report)
+	diagnoseLocalNetworks(report, config)
+	diagnoseSupervisor(report, options.ProfileName)
 
 	report.section("end")
 	return report.String()
@@ -100,7 +114,30 @@ func diagnoseMachine(report *Report) {
 	}
 }
 
-func diagnoseInstall(report *Report, config appConfig) {
+// diagnoseProfiles is the first question to ask of a machine that holds more
+// than one deployment: which of them are there at all, and which one is this
+// report about.
+func diagnoseProfiles(report *Report, current string) {
+	report.section("VPN profiles")
+
+	names := ListProfiles()
+	if len(names) == 0 {
+		report.field("profiles", "none installed")
+		return
+	}
+	for _, name := range names {
+		config := installedTunnel(name)
+		marker := " "
+		if name == current {
+			marker = "*"
+		}
+		report.field(marker+" "+name, "%s  %s  %s",
+			config.InterfaceName, orNone(config.ClientAddress), orNone(config.StackName))
+	}
+	report.field("", "%s", "(* is the profile the rest of this report describes)")
+}
+
+func diagnoseInstall(report *Report, config appConfig, settings Settings) {
 	report.section("what is installed")
 
 	for _, path := range []string{
@@ -128,30 +165,39 @@ func diagnoseInstall(report *Report, config appConfig) {
 	}
 
 	report.section("configuration")
-	report.field("config file", "%s", AppConfigPath())
+	report.field("profile", "%s", config.ProfileName)
+	report.field("config file", "%s", ProfileConfigPath(config.ProfileName))
 	report.field("interface", "%s", config.InterfaceName)
 	report.field("this machine", "%s", config.ClientAddress)
 	report.field("service port", "%s", orNone(config.ServicePort))
 	report.field("health check", "%s", orNone(config.HealthCheckURL))
 	report.field("helper", "%s", config.HelperPath)
 	report.field("supervised", "%t", config.Supervised)
+	if len(config.TcpPorts) > 0 {
+		report.field("exposed TCP ports", "%s", strings.Join(config.TcpPorts, ", "))
+	}
+	if config.IdleTimeoutMinutes > 0 {
+		report.field("idle timeout", "%d minutes, then the gateway is switched off", config.IdleTimeoutMinutes)
+		report.field("wake role", "%s", orNone(settings.WakeRoleARN))
+	}
 
 	// Contents never shown. Its presence and mode are the whole question —
 	// and "cannot look" is a third answer, distinct from "not there".
-	info, err := os.Stat(ClientKeyPath)
+	keyPath := Settings{InterfaceName: config.InterfaceName}.ClientKeyPath()
+	info, err := os.Stat(keyPath)
 	switch {
 	case err == nil:
-		report.field("private key", "present, mode %s, %s", info.Mode().Perm(), owner(ClientKeyPath))
+		report.field("private key", "present, mode %s, %s", info.Mode().Perm(), owner(keyPath))
 		if info.Mode().Perm() != 0o600 {
 			report.field("", "%s", "WARNING: expected mode 600")
 		}
 	case os.IsPermission(err):
 		report.field("private key", "cannot check without sudo (/etc/wireguard is root-only)")
 	default:
-		report.field("private key", "MISSING at %s", ClientKeyPath)
+		report.field("private key", "MISSING at %s", keyPath)
 	}
 
-	if content, err := os.ReadFile(PublicKeyPath()); err == nil {
+	if content, err := os.ReadFile(PublicKeyPath(config.ProfileName)); err == nil {
 		report.field("public key", "%s", strings.TrimSpace(string(content)))
 	}
 
@@ -297,7 +343,7 @@ func diagnoseAWS(ctx context.Context, report *Report, options DiagnoseOptions) {
 	}
 
 	if targetGroup := outputs["TargetGroupArn"]; targetGroup != "" {
-		config := installedTunnel()
+		config := installedTunnel(options.ProfileName)
 		state, err := client.TargetHealthOf(ctx, targetGroup, config.ClientAddress)
 		if err != nil {
 			report.field("target health", "could not read: %v", firstLine(err.Error()))
@@ -307,7 +353,42 @@ func diagnoseAWS(ctx context.Context, report *Report, options DiagnoseOptions) {
 	}
 }
 
-func diagnoseSupervisor(report *Report) {
+// diagnoseLocalNetworks answers the question that produces the strangest
+// support mail: the tunnel came up and the rest of the network went away. It
+// happens when a claimed range is a range this machine is already on, and it
+// is invisible unless the two are listed side by side.
+func diagnoseLocalNetworks(report *Report, config appConfig) {
+	report.section("networks this machine is on")
+
+	local, err := tunnel.LocalNetworks([]string{config.InterfaceName, tunnel.Device(config.InterfaceName)})
+	if err != nil {
+		report.field("interfaces", "could not be listed: %v", firstLine(err.Error()))
+		return
+	}
+	for _, network := range local {
+		report.field(network.Interface, "%s", network.Net)
+	}
+
+	file, err := tunnel.Load(Settings{InterfaceName: config.InterfaceName}.TunnelConfigPath())
+	if err != nil {
+		report.field("tunnel routes", "the configuration could not be read: %v", firstLine(err.Error()))
+		return
+	}
+	claimed := tunnel.ClaimedBy(file)
+	report.field("tunnel would route", "%s", strings.Join(claimed, ", "))
+
+	collisions := tunnel.Collisions(claimed, local)
+	if len(collisions) == 0 {
+		report.field("collisions", "none")
+		return
+	}
+	report.field("collisions", "%s", "THIS TUNNEL WILL NOT BE RAISED:")
+	for _, line := range strings.Split(tunnel.Explain(collisions), "\n") {
+		report.addf("%s", line)
+	}
+}
+
+func diagnoseSupervisor(report *Report, profileName string) {
 	report.section("supervisor")
 
 	if !sys.Exists(SupervisorPlistPath) {
@@ -328,7 +409,7 @@ func diagnoseSupervisor(report *Report) {
 		}
 	}
 
-	if content, err := os.ReadFile(DesiredStatePath()); err == nil {
+	if content, err := os.ReadFile(DesiredStatePathFor(profileName)); err == nil {
 		report.field("desired state", "%s", strings.TrimSpace(string(content)))
 	} else {
 		report.field("desired state", "not recorded")

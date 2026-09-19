@@ -6,7 +6,7 @@ AWSTemplateFormatVersion: '2010-09-09'
 #
 # WHOSE ACCOUNT THIS IS
 # ---------------------
-# Not the customer's. cloudformation-xprem-onprem-vpn.yaml is deployed once per
+# Not the customer's. cloudformation-microtunnel.yaml is deployed once per
 # customer, into their account, and pays for itself there. This stack is the
 # vendor's, deployed once, and every copy of the app ever shipped reads from it.
 # The two have nothing to do with each other and should not share a stack, a
@@ -269,6 +269,16 @@ Outputs:
       - HasDomain
       - !Sub 'https://${DomainName}/releases'
       - !Sub 'https://${Distribution.DomainName}/releases'
+
+  DownloadUrl:
+    Description: >-
+      Stable link for the website's download button. It names no version, so
+      the page never has to be edited for a release; `make publish` overwrites
+      the object behind it and invalidates the cache.
+    Value: !If
+      - HasDomain
+      - !Sub 'https://${DomainName}/MyMicroTunnel.pkg'
+      - !Sub 'https://${Distribution.DomainName}/MyMicroTunnel.pkg'
 
   BucketName:
     Value: !Ref UpdatesBucket

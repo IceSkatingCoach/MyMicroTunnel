@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,12 +27,11 @@ const (
 )
 
 const (
-	ClientKeyPath    = "/etc/wireguard/client.key"
-	SudoersPath      = "/etc/sudoers.d/xprem-vpn"
-	InstalledAppPath = "/Applications/XpremVpn.app"
+	SudoersPath      = "/etc/sudoers.d/mymicrotunnel"
+	InstalledAppPath = "/Applications/MyMicroTunnel.app"
 
 	// CommandPath is the copy on the path, for people.
-	CommandPath = "/usr/local/bin/wiregard-mini-vpn"
+	CommandPath = "/usr/local/bin/mymicrotunnel"
 
 	// HelperPath is the copy the sudoers rule names, and it is deliberately not
 	// the one above.
@@ -46,11 +44,11 @@ const (
 	// /usr/local. /Library/PrivilegedHelperTools is root:wheel, is the location
 	// Apple documents for exactly this, and is not somewhere a package manager
 	// takes ownership of.
-	HelperPath = "/Library/PrivilegedHelperTools/ca.maragato.xprem.vpn.helper"
+	HelperPath = "/Library/PrivilegedHelperTools/ca.maragato.mymicrotunnel.helper"
 
 	// EmbeddedEngineDir holds the copy of wireguard-go the package ships, so a
 	// customer needs neither Homebrew nor a second installer.
-	EmbeddedEngineDir = "/usr/local/lib/wiregard-mini-vpn"
+	EmbeddedEngineDir = "/usr/local/lib/mymicrotunnel"
 
 	// MTU leaves room for the WireGuard header inside a 1500-byte path, with
 	// enough margin for a PPPoE link underneath it.
@@ -59,16 +57,43 @@ const (
 
 // Settings is the whole deployment in one struct: what the user answered, what
 // was discovered about their account, and what the stack reported back.
+//
+// One of these is one *VPN profile*. A workstation can hold several, each with
+// its own stack, its own tunnel subnet, its own WireGuard interface and its own
+// set of exposed ports, so that a laptop can be behind two deployments at once
+// — a work one and a personal one, say — without either knowing about the
+// other. Everything that used to be a fixed path is derived from the profile
+// name or the interface name for exactly that reason.
 type Settings struct {
+	// ProfileName names the VPN profile on this machine. It is not the AWS
+	// profile below; the two are separate because one AWS account routinely
+	// holds several deployments.
+	ProfileName string `json:"profileName"`
+
 	Profile         string `json:"profile"`
 	AccessKeyID     string `json:"-"`
 	SecretAccessKey string `json:"-"`
 	Region          string `json:"region"`
+	AccountID       string `json:"accountId"`
 
 	StackName       string `json:"stackName"`
 	DomainName      string `json:"domainName"`
 	ServicePort     string `json:"servicePort"`
 	HealthCheckPath string `json:"healthCheckPath"`
+
+	// TcpPorts are exposed through the load balancer as plain TCP, in addition
+	// to the TLS-terminated ServicePort on 443. Ten at most, because the
+	// template has ten slots.
+	TcpPorts []string `json:"tcpPorts,omitempty"`
+
+	// IdleTimeoutMinutes switches the gateway off after that many minutes with
+	// no traffic through the load balancer. Zero leaves it running.
+	IdleTimeoutMinutes int `json:"idleTimeoutMinutes"`
+
+	// AppPrincipalArn is who may assume the wake role: the identity this
+	// workstation's AWS profile authenticates as. Discovered rather than
+	// asked for, and empty falls back to trusting the account.
+	AppPrincipalArn string `json:"appPrincipalArn"`
 
 	// Discovered from the account rather than asked for. Kept in the settings
 	// file so the privileged stage and a later uninstall see the same
@@ -105,14 +130,30 @@ type Settings struct {
 	Endpoint        string `json:"endpoint"`
 	ServerPublicKey string `json:"serverPublicKey"`
 	TargetGroupARN  string `json:"targetGroupArn"`
+
+	// TcpTargetGroups maps an exposed port to the target group the stack built
+	// for it. Read back from the outputs rather than derived, because a slot
+	// that is not in use has no target group at all.
+	TcpTargetGroups map[string]string `json:"tcpTargetGroups,omitempty"`
+
+	// The alias record's target, kept so an uninstall can delete exactly the
+	// record this deployment wrote and leave one pointing elsewhere alone.
+	LoadBalancerDNSName string `json:"loadBalancerDnsName"`
+	LoadBalancerZoneID  string `json:"loadBalancerZoneId"`
+
+	// What the workstation needs to bring a switched-off gateway back.
+	WakeRoleARN      string `json:"wakeRoleArn"`
+	GatewayGroupName string `json:"gatewayGroupName"`
 }
 
 func Defaults() Settings {
 	return Settings{
-		// Region and DomainName have no useful default. A region guess deploys
-		// into the wrong continent, and a hostname guess claims a name in
-		// somebody else's zone; both fail late and expensively.
-		StackName:       "xprem-onprem-vpn",
+		ProfileName: DefaultProfileName,
+		// Region, DomainName and StackName have no useful default here. A
+		// region guess deploys into the wrong continent and a hostname guess
+		// claims a name in somebody else's zone; the stack name is derived
+		// from the account and the region once the credentials are known, by
+		// DefaultStackName.
 		ServicePort:     "3000",
 		HealthCheckPath: "/hc",
 		InterfaceName:   "wg0",
@@ -137,7 +178,7 @@ func Hostname() string {
 //
 // Every parameter this deployment owns lives under one prefix named for the
 // stack. One account can hold several deployments, and the fixed
-// /xprem/vpn/... path the first version used meant the second stack to boot
+// /microtunnel/vpn/... path the first version used meant the second stack to boot
 // would overwrite the first one's server key and silently break its tunnel.
 
 func (s Settings) ParameterPrefix() string {
@@ -156,6 +197,30 @@ func (s Settings) TunnelConfigPath() string {
 	return "/etc/wireguard/" + s.InterfaceName + ".conf"
 }
 
+// ClientKeyPath is one private key per interface, because one machine can hold
+// several tunnels and a shared key would mean two deployments trusting the
+// same identity — and either of them revoking it for both.
+func (s Settings) ClientKeyPath() string {
+	name := s.InterfaceName
+	if name == "" {
+		name = Defaults().InterfaceName
+	}
+	return "/etc/wireguard/" + name + ".key"
+}
+
+// DefaultStackName is what a deployment is called when nobody says otherwise.
+//
+// The account and the region are in the name because the alternative — one
+// fixed name — makes the second deployment in an account collide with the
+// first, and because a stack name is the only thing a person sees in the
+// CloudFormation console when they are looking at three of them.
+func DefaultStackName(accountID, region string) string {
+	if accountID == "" || region == "" {
+		return ""
+	}
+	return "microtunnel-" + accountID + "-" + region
+}
+
 func (s Settings) ServiceURL() string {
 	return "https://" + s.DomainName
 }
@@ -172,11 +237,46 @@ func (s Settings) Port() int32 {
 	return int32(port)
 }
 
+// MaxTcpPorts is the number of slots the template declares. It is a hard limit
+// rather than a soft one: an eleventh port has nowhere to go, and finding that
+// out from a rejected change set is five minutes later than finding it out
+// here.
+const MaxTcpPorts = 10
+
+// TcpPortNumbers is the exposed ports as numbers, in the order given, skipping
+// anything that is not one.
+func (s Settings) TcpPortNumbers() []int32 {
+	ports := make([]int32, 0, len(s.TcpPorts))
+	for _, raw := range s.TcpPorts {
+		port, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil || port < 1 || port > 65535 {
+			continue
+		}
+		ports = append(ports, int32(port))
+	}
+	return ports
+}
+
+// ParseTcpPorts turns "5432, 6379" into the list the settings hold. Empty
+// entries are dropped rather than rejected, so a trailing comma is not an
+// error worth stopping an install for.
+func ParseTcpPorts(list string) []string {
+	var ports []string
+	for _, field := range strings.Split(list, ",") {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			ports = append(ports, field)
+		}
+	}
+	return ports
+}
+
 // --- validation ------------------------------------------------------------
 
 var (
 	hostnamePattern  = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?)+$`)
 	stackNamePattern = regexp.MustCompile(`^[a-zA-Z][-a-zA-Z0-9]{0,127}$`)
+	profilePattern   = regexp.MustCompile(`^[a-zA-Z0-9][-a-zA-Z0-9_]{0,31}$`)
 	interfacePattern = regexp.MustCompile(`^[a-z][a-z0-9]{0,14}$`)
 	regionPattern    = regexp.MustCompile(`^[a-z]{2}(-gov)?-[a-z]+-[0-9]$`)
 	emailPattern     = regexp.MustCompile(`^[^@\s]+@[^@\s]+\.[^@\s]+$`)
@@ -203,6 +303,15 @@ func (s Settings) Validate() error {
 		problems = append(problems, "no hostname: pass --domain with the name this deployment should serve")
 	} else if !hostnamePattern.MatchString(s.DomainName) {
 		problems = append(problems, fmt.Sprintf("%q is not a fully qualified hostname", s.DomainName))
+	} else if strings.Count(s.DomainName, ".") < 2 {
+		// A name has to sit *inside* a zone this account already holds: a host
+		// label, the domain, and the top-level domain. Given "example.com" the
+		// installer would look for a zone authoritative for it and then write
+		// the zone apex — taking over the customer's bare domain, which is
+		// usually where their website is.
+		problems = append(problems, fmt.Sprintf(
+			"%q has no host part: the hostname needs three labels, like updates.example.com, "+
+				"so the record goes inside the zone rather than over it", s.DomainName))
 	}
 
 	port, err := strconv.Atoi(s.ServicePort)
@@ -211,6 +320,20 @@ func (s Settings) Validate() error {
 	}
 	if !strings.HasPrefix(s.HealthCheckPath, "/") {
 		problems = append(problems, "the health check path must start with /")
+	}
+
+	// The VPN profile's name becomes a directory under Application Support,
+	// so it cannot be a path of its own.
+	if !profilePattern.MatchString(s.ProfileName) {
+		problems = append(problems, fmt.Sprintf(
+			"%q is not a usable profile name: letters, digits, - and _, up to 32 characters", s.ProfileName))
+	}
+
+	problems = append(problems, s.portProblems()...)
+
+	if s.IdleTimeoutMinutes < 0 || s.IdleTimeoutMinutes > 1440 {
+		problems = append(problems, fmt.Sprintf(
+			"the idle timeout is %d minutes; it has to be between 0 (never) and 1440", s.IdleTimeoutMinutes))
 	}
 
 	// A name that is not a plain interface name would be interpolated into
@@ -263,6 +386,43 @@ func (s Settings) Validate() error {
 	return fmt.Errorf("this deployment cannot work as described:\n  · %s", strings.Join(problems, "\n  · "))
 }
 
+// portProblems checks the exposed TCP ports on their own, because there are
+// four separate ways to get them wrong and each one fails differently:
+// a duplicate builds two target groups for one port and the second listener is
+// rejected; 443 collides with the TLS listener this template already owns; an
+// eleventh port has no slot; and a non-number reaches CloudFormation as a
+// parameter constraint violation five minutes into a deploy.
+func (s Settings) portProblems() []string {
+	var problems []string
+
+	if len(s.TcpPorts) > MaxTcpPorts {
+		problems = append(problems, fmt.Sprintf(
+			"%d TCP ports were asked for and the deployment has room for %d", len(s.TcpPorts), MaxTcpPorts))
+	}
+
+	seen := map[int]bool{}
+	for _, raw := range s.TcpPorts {
+		trimmed := strings.TrimSpace(raw)
+		port, err := strconv.Atoi(trimmed)
+		if err != nil || port < 1 || port > 65535 {
+			problems = append(problems, fmt.Sprintf("%q is not a port number", trimmed))
+			continue
+		}
+		if seen[port] {
+			problems = append(problems, fmt.Sprintf("port %d is listed twice", port))
+			continue
+		}
+		seen[port] = true
+		if port == 443 {
+			problems = append(problems, "port 443 already carries the TLS listener for "+s.DomainName)
+		}
+		if port == 51820 {
+			problems = append(problems, "port 51820 is the WireGuard endpoint itself")
+		}
+	}
+	return problems
+}
+
 // ValidateNetwork checks what discovery produced, separately from what the user
 // typed, because the two fail for different reasons and at different times.
 func (s Settings) ValidateNetwork() error {
@@ -301,22 +461,11 @@ func (s Settings) ValidateNetwork() error {
 
 // --- files -----------------------------------------------------------------
 
-func AppConfigDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, "Library", "Application Support", "XpremVpn")
-}
-
-func AppConfigPath() string {
-	return filepath.Join(AppConfigDir(), "config.json")
-}
-
 // appConfig is the subset the menu bar app reads. Written separately from
 // Settings so the app never sees deployment details it has no use for, and in
 // particular never sees the AWS account.
 type appConfig struct {
+	ProfileName    string `json:"profileName"`
 	InterfaceName  string `json:"interfaceName"`
 	ClientAddress  string `json:"clientAddress"`
 	GatewayAddress string `json:"gatewayAddress"`
@@ -329,30 +478,48 @@ type appConfig struct {
 	ServiceURL       string `json:"serviceUrl"`
 	Supervised       bool   `json:"supervised"`
 	DesiredStatePath string `json:"desiredStatePath"`
+
+	// TcpPorts is shown in the menu, so somebody can see what a profile
+	// publishes without opening the AWS console.
+	TcpPorts []string `json:"tcpPorts,omitempty"`
+
+	// What waking a switched-off gateway needs. The app runs the wake through
+	// this tool rather than talking to AWS itself, so these are here to be
+	// displayed and to say whether waking is possible at all.
+	AwsProfile         string `json:"awsProfile"`
+	Region             string `json:"region"`
+	StackName          string `json:"stackName"`
+	IdleTimeoutMinutes int    `json:"idleTimeoutMinutes"`
 }
 
 func WriteAppConfig(s Settings) error {
-	directory := AppConfigDir()
+	directory := ProfileDir(s.ProfileName)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return err
 	}
 
 	encoded, err := json.MarshalIndent(appConfig{
-		InterfaceName:    s.InterfaceName,
-		ClientAddress:    s.ClientAddress,
-		GatewayAddress:   s.GatewayAddress,
-		ServicePort:      s.ServicePort,
-		HelperPath:       HelperPath,
-		HealthCheckURL:   s.HealthCheckURL(),
-		ServiceURL:       s.ServiceURL(),
-		Supervised:       s.Supervise,
-		DesiredStatePath: DesiredStatePath(),
+		ProfileName:        s.ProfileName,
+		InterfaceName:      s.InterfaceName,
+		ClientAddress:      s.ClientAddress,
+		GatewayAddress:     s.GatewayAddress,
+		ServicePort:        s.ServicePort,
+		HelperPath:         HelperPath,
+		HealthCheckURL:     s.HealthCheckURL(),
+		ServiceURL:         s.ServiceURL(),
+		Supervised:         s.Supervise,
+		DesiredStatePath:   s.DesiredStatePath(),
+		TcpPorts:           s.TcpPorts,
+		AwsProfile:         s.Profile,
+		Region:             s.Region,
+		StackName:          s.StackName,
+		IdleTimeoutMinutes: s.IdleTimeoutMinutes,
 	}, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(AppConfigPath(), append(encoded, '\n'), 0o644)
+	return os.WriteFile(ProfileConfigPath(s.ProfileName), append(encoded, '\n'), 0o644)
 }
 
 // Port is the load balancer target's port. Zero when the config predates the
@@ -368,7 +535,7 @@ func (c appConfig) Port() int32 {
 // InstalledClientAddress is the tunnel address this machine actually uses,
 // read from what the installer wrote rather than from the defaults.
 func InstalledClientAddress() string {
-	config := installedTunnel()
+	config := installedTunnel(DefaultProfileName)
 	return config.ClientAddress
 }
 

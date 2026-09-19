@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Creates the least-privilege identity that installs Xprem VPN. Deploy this
+  Creates the least-privilege identity that installs MyMicroTunnel. Deploy this
   once, in your own account, then create an access key for the user it makes.
 
 # WHY THIS EXISTS
@@ -26,7 +26,7 @@ Description: >-
 Parameters:
   UserName:
     Type: String
-    Default: xprem-vpn-deploy
+    Default: mymicrotunnel-deploy
     Description: Name for the IAM user the installer will authenticate as
     AllowedPattern: '^[\w+=,.@-]+$'
 
@@ -35,7 +35,7 @@ Resources:
     Type: AWS::IAM::ManagedPolicy
     Properties:
       ManagedPolicyName: !Sub '${UserName}-policy'
-      Description: Least-privilege permissions for the Xprem VPN installer
+      Description: Least-privilege permissions for the MyMicroTunnel installer
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -102,6 +102,12 @@ Resources:
               - autoscaling:DisableMetricsCollection
               - autoscaling:CreateOrUpdateTags
               - autoscaling:DeleteTags
+              # The scale-to-zero policy the idle timeout fires. Without
+              # these, a stack with an idle timeout fails at the one resource
+              # that makes it save money.
+              - autoscaling:PutScalingPolicy
+              - autoscaling:DeletePolicy
+              - autoscaling:DescribePolicies
             Resource: "*"
           - Sid: TheGatewaysOwnRole
             Effect: Allow
@@ -124,6 +130,10 @@ Resources:
             Resource:
               - "arn:aws:iam::*:role/*-GatewayRole-*"
               - "arn:aws:iam::*:instance-profile/*-GatewayInstanceProfile-*"
+              # The role the workstation assumes to wake a gateway that
+              # switched itself off. It is created by the same stack and is
+              # named the same way, so it is scoped the same way.
+              - "arn:aws:iam::*:role/*-WakeRole-*"
           - Sid: HandTheRoleToTheInstance
             Effect: Allow
             Action: iam:PassRole
@@ -216,7 +226,7 @@ Resources:
         - !Ref DeployPolicy
       Tags:
         - Key: Purpose
-          Value: Installs Xprem VPN
+          Value: Installs MyMicroTunnel
 
 Outputs:
   UserNameOut:
@@ -226,7 +236,7 @@ Outputs:
   CreateAccessKeyUrl:
     Description: >-
       Open this, choose "Create access key", pick "Command Line Interface", and
-      paste the two values into the Xprem VPN setup window. The secret is shown
+      paste the two values into the MyMicroTunnel setup window. The secret is shown
       once and stored nowhere.
     Value: !Sub 'https://console.aws.amazon.com/iam/home#/users/details/${DeployUser}?section=security_credentials'
 

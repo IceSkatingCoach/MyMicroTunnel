@@ -4,7 +4,7 @@
 
 VERSION := $(shell cat VERSION)
 COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-MODULE  := github.com/IceSkatingCoach/wiregard_mini_vpn
+MODULE  := github.com/IceSkatingCoach/MyMicroTunnel
 LDFLAGS := -s -w \
 	-X $(MODULE)/internal/version.Version=$(VERSION) \
 	-X $(MODULE)/internal/version.Commit=$(COMMIT)
@@ -16,19 +16,30 @@ export COMMIT
 # itself. Without the export, packaging rebuilds the bundle without them and
 # quietly produces an app that never asks for an update — a feed published for
 # nobody. cmd/appcast --validate is what catches that.
-APPCAST_FEED_URL ?=
-SPARKLE_PUBLIC_KEY ?=
+# Defaulted, not left empty, because these three are the constants of this
+# product rather than choices to be made per release. The feed URL and the
+# public key are compiled into every copy that ships: a typo in either
+# orphans every installed copy, permanently and silently, and a flag typed by
+# hand on a 200-character command line is exactly where that typo comes from.
+#
+# Override them on the command line only to publish a different product.
+APPCAST_FEED_URL ?= https://downloads.maragato.ca/appcast.xml
+APPCAST_BASE_URL ?= https://downloads.maragato.ca/releases
+SPARKLE_PUBLIC_KEY ?= TUNOwHLcBYol4jkGwdL7Cif3UQFyvToyBxkFvZDhaBU=
 export APPCAST_FEED_URL
 export SPARKLE_PUBLIC_KEY
+
+# The website's own stack. Overridable, but there is only ever one of it.
+SITE_STACK ?= mymicrotunnel-site
 
 # DOMAIN is the public hostname this deployment serves. There is no default:
 # guessing one claims a name in somebody else's zone.
 install: engine
 	@test -n "$(DOMAIN)" || (echo "Usage: make install DOMAIN=updates.example.com" && false)
-	./build/wiregard-mini-vpn install --domain $(DOMAIN) $(INSTALL_FLAGS)
+	./build/mymicrotunnel install --domain $(DOMAIN) $(INSTALL_FLAGS)
 
 uninstall: engine
-	./build/wiregard-mini-vpn uninstall $(UNINSTALL_FLAGS)
+	./build/mymicrotunnel uninstall $(UNINSTALL_FLAGS)
 
 # Universal, because a customer's Mac is whichever one they own. A Rosetta
 # translation of the engine would work, but the app bundle it ships inside has
@@ -42,10 +53,10 @@ wireguard:
 
 engine: wireguard
 	mkdir -p build
-	GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o build/wiregard-mini-vpn.arm64 ./cmd/wiregard-mini-vpn
-	GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o build/wiregard-mini-vpn.amd64 ./cmd/wiregard-mini-vpn
-	lipo -create -output build/wiregard-mini-vpn build/wiregard-mini-vpn.arm64 build/wiregard-mini-vpn.amd64
-	rm -f build/wiregard-mini-vpn.arm64 build/wiregard-mini-vpn.amd64
+	GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "$(LDFLAGS)" -o build/mymicrotunnel.arm64 ./cmd/mymicrotunnel
+	GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o build/mymicrotunnel.amd64 ./cmd/mymicrotunnel
+	lipo -create -output build/mymicrotunnel build/mymicrotunnel.arm64 build/mymicrotunnel.amd64
+	rm -f build/mymicrotunnel.arm64 build/mymicrotunnel.amd64
 	# Beside the engine, which is where internal/tunnel looks for it first.
 	cp third_party/wireguard-go build/wireguard-go
 
@@ -79,10 +90,47 @@ rollback:
 # Deploys the feed's own infrastructure — the vendor's bucket and distribution,
 # not a customer's stack. Run once; it prints the two URLs a release needs.
 #
-#   make feed-setup FEED_BUCKET=xpremvpn-downloads FEED_DOMAIN=downloads.example.com
+#   make feed-setup FEED_BUCKET=mymicrotunnel-downloads FEED_DOMAIN=downloads.example.com
 feed-setup:
 	@test -n "$(FEED_BUCKET)" || (echo "Usage: make feed-setup FEED_BUCKET=<name> [FEED_DOMAIN=<hostname>]" && false)
 	go run ./cmd/publish --setup --bucket $(FEED_BUCKET) --domain "$(FEED_DOMAIN)"
+
+# The product website, deployed once: the vendor's bucket and distribution,
+# not a customer's stack. The hostname is a new one rather than an edit of an
+# existing record, so this does not disturb whatever the zone already serves.
+#
+#   make site-setup SITE_BUCKET=mymicrotunnel-site-985658740042 \
+#        SITE_DOMAIN=mymicrotunnel.maragato.ca HOSTED_ZONE_ID=Z00534512C27FKRK6YRDT
+site-setup:
+	@test -n "$(SITE_BUCKET)" || (echo "Usage: make site-setup SITE_BUCKET=<name> SITE_DOMAIN=<hostname> HOSTED_ZONE_ID=<id>" && false)
+	@test -n "$(SITE_DOMAIN)" || (echo "site-setup needs SITE_DOMAIN" && false)
+	@test -n "$(HOSTED_ZONE_ID)" || (echo "site-setup needs HOSTED_ZONE_ID" && false)
+	aws cloudformation deploy --region us-east-1 \
+		--template-file infra/cloudformation-site.yaml \
+		--stack-name $(SITE_STACK) \
+		--parameter-overrides BucketName=$(SITE_BUCKET) DomainName=$(SITE_DOMAIN) HostedZoneId=$(HOSTED_ZONE_ID) \
+		--no-fail-on-empty-changeset
+	aws cloudformation describe-stacks --region us-east-1 --stack-name $(SITE_STACK) \
+		--query 'Stacks[0].Outputs' --output table
+
+# Uploads the page and the one-click deploy-role template, then invalidates the
+# cached copies. The bucket and distribution are read from the stack rather
+# than repeated here, so the two cannot disagree about which site this is.
+#
+# deploy-role.yaml is uploaded twice on purpose: launch/ is the path the
+# one-click link points at, and the copy at the root is the one people are
+# told to read before they trust it.
+site-publish:
+	$(eval SITE_BUCKET_NAME := $(shell aws cloudformation describe-stacks --region us-east-1 \
+		--stack-name $(SITE_STACK) --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' --output text))
+	$(eval SITE_DISTRIBUTION := $(shell aws cloudformation describe-stacks --region us-east-1 \
+		--stack-name $(SITE_STACK) --query 'Stacks[0].Outputs[?OutputKey==`DistributionId`].OutputValue' --output text))
+	@test -n "$(SITE_BUCKET_NAME)" || (echo "no $(SITE_STACK) stack; run make site-setup first" && false)
+	aws s3 cp site/index.html s3://$(SITE_BUCKET_NAME)/index.html --content-type text/html
+	aws s3 cp infra/cloudformation-deploy-role.yaml s3://$(SITE_BUCKET_NAME)/launch/deploy-role.yaml --content-type text/yaml
+	aws s3 cp infra/cloudformation-deploy-role.yaml s3://$(SITE_BUCKET_NAME)/deploy-role.yaml --content-type text/yaml
+	aws cloudfront create-invalidation --distribution-id $(SITE_DISTRIBUTION) --paths '/*' \
+		--query 'Invalidation.Status' --output text
 
 # Uploads the archive and the appcast, invalidates the cached feed, and reads
 # the feed back over the public URL to prove what will actually be served.
@@ -93,7 +141,7 @@ publish:
 # here is idempotent except publish, which refuses to overwrite a version that
 # is already out.
 #
-#   make release PROFILE=wiregard \
+#   make release PROFILE=microtunnel \
 #        APPCAST_FEED_URL=https://downloads.example.com/appcast.xml \
 #        SPARKLE_PUBLIC_KEY=... \
 #        APPCAST_BASE_URL=https://downloads.example.com/releases
@@ -132,11 +180,11 @@ check: test lint-template
 # make the two disagree.
 lint-template:
 	@command -v cfn-lint >/dev/null 2>&1 \
-		&& cfn-lint infra/cloudformation-xprem-onprem-vpn.yaml infra/cloudformation-updates.yaml \
+		&& cfn-lint infra/cloudformation-microtunnel.yaml infra/cloudformation-updates.yaml \
 		|| echo "cfn-lint is not installed; skipping (pip install cfn-lint)"
 
 clean:
 	$(MAKE) -C menubar clean
 	rm -rf build
 
-.PHONY: install uninstall wireguard sparkle sparkle-keys appcast appcast-validate rollback feed-setup publish release engine app pkg pkg-notarized test check lint-template clean
+.PHONY: install uninstall wireguard sparkle sparkle-keys appcast appcast-validate rollback feed-setup site-setup site-publish publish release engine app pkg pkg-notarized test check lint-template clean

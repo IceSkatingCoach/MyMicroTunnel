@@ -230,3 +230,62 @@ func (c *Client) FindHostedZone(ctx context.Context, domain string) (string, err
 func isPrivate(zone r53types.HostedZone) bool {
 	return zone.Config != nil && zone.Config.PrivateZone
 }
+
+// --- the hostname's alias record -------------------------------------------
+
+// UpsertAlias points a hostname at the load balancer.
+//
+// This is not a CloudFormation resource, and that is the whole point.
+// AWS::Route53::RecordSet refuses a name that already exists — it fails with
+// "but it already exists" and rolls the stack back — so a hostname that was
+// pointed at an older deployment, or at a placeholder somebody parked there,
+// cannot be taken over by the template. An UPSERT takes it over and is also
+// what makes re-running the installer a no-op rather than an error.
+//
+// The zone is never created here. It belongs to the customer, it predates this
+// deployment, and it usually carries their mail.
+func (c *Client) UpsertAlias(ctx context.Context, hostedZoneID, hostname, targetDNSName, targetZoneID string) error {
+	return c.changeAlias(ctx, r53types.ChangeActionUpsert, hostedZoneID, hostname, targetDNSName, targetZoneID)
+}
+
+// DeleteAlias removes the record again. Route53 matches a deletion on the
+// whole record, not just its name, which is why the target has to be passed
+// back in: a record pointed somewhere else is somebody else's and is left
+// alone rather than deleted by name.
+func (c *Client) DeleteAlias(ctx context.Context, hostedZoneID, hostname, targetDNSName, targetZoneID string) error {
+	err := c.changeAlias(ctx, r53types.ChangeActionDelete, hostedZoneID, hostname, targetDNSName, targetZoneID)
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		return nil
+	}
+	return err
+}
+
+func (c *Client) changeAlias(ctx context.Context, action r53types.ChangeAction, hostedZoneID, hostname, targetDNSName, targetZoneID string) error {
+	if hostedZoneID == "" || hostname == "" || targetDNSName == "" || targetZoneID == "" {
+		return fmt.Errorf("an alias record needs a zone, a hostname and a target")
+	}
+
+	_, err := c.Route53.ChangeResourceRecordSets(ctx, &route53.ChangeResourceRecordSetsInput{
+		HostedZoneId: aws.String(hostedZoneID),
+		ChangeBatch: &r53types.ChangeBatch{
+			Comment: aws.String("MyMicroTunnel"),
+			Changes: []r53types.Change{{
+				Action: action,
+				ResourceRecordSet: &r53types.ResourceRecordSet{
+					Name: aws.String(strings.TrimSuffix(hostname, ".") + "."),
+					Type: r53types.RRTypeA,
+					AliasTarget: &r53types.AliasTarget{
+						DNSName:      aws.String(targetDNSName),
+						HostedZoneId: aws.String(targetZoneID),
+						// The load balancer answers for every workstation
+						// behind it; health is the target group's business,
+						// and letting DNS take the name away as well would
+						// hide the outage rather than report it.
+						EvaluateTargetHealth: false,
+					},
+				},
+			}},
+		},
+	})
+	return err
+}

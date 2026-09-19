@@ -1,6 +1,6 @@
 {
   "Comment": [
-    "Least-privilege policy for the identity that runs `wiregard-mini-vpn install`.",
+    "Least-privilege policy for the identity that runs `mymicrotunnel install`.",
     "",
     "The customer owns the AWS account, so this is the policy they attach to a",
     "dedicated deploy user or role rather than handing the installer an",
@@ -96,7 +96,10 @@
         "autoscaling:EnableMetricsCollection",
         "autoscaling:DisableMetricsCollection",
         "autoscaling:CreateOrUpdateTags",
-        "autoscaling:DeleteTags"
+        "autoscaling:DeleteTags",
+        "autoscaling:PutScalingPolicy",
+        "autoscaling:DeletePolicy",
+        "autoscaling:DescribePolicies"
       ],
       "Resource": "*"
     },
@@ -122,7 +125,8 @@
       ],
       "Resource": [
         "arn:aws:iam::*:role/*-GatewayRole-*",
-        "arn:aws:iam::*:instance-profile/*-GatewayInstanceProfile-*"
+        "arn:aws:iam::*:instance-profile/*-GatewayInstanceProfile-*",
+        "arn:aws:iam::*:role/*-WakeRole-*"
       ]
     },
     {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // First-run setup, as a window rather than a terminal session.
 //
-// It does not reimplement the deployment: it drives the wiregard-mini-vpn
+// It does not reimplement the deployment: it drives the mymicrotunnel
 // binary shipped inside this bundle, reading the NDJSON events that binary
 // emits with --json. One implementation of the AWS logic, two front ends that
 // cannot drift apart.
@@ -22,10 +22,14 @@ final class SetupWindowController: NSWindowController {
     private let accessKeyField = NSTextField()
     private let secretKeyField = NSSecureTextField()
     private let regionField = NSTextField()
+    private let vpnProfileField = NSTextField()
     private let stackField = NSTextField()
     private let domainField = NSTextField()
     private let portField = NSTextField()
+    private let tcpPortsField = NSTextField()
     private let healthPathField = NSTextField()
+    private let vpnCidrField = NSTextField()
+    private let idleTimeoutField = NSTextField()
     private let alarmEmailField = NSTextField()
     private let superviseCheckbox = NSButton(
         checkboxWithTitle: "Restore the tunnel after a reboot", target: nil, action: nil)
@@ -36,7 +40,7 @@ final class SetupWindowController: NSWindowController {
     private let statusLabel = NSTextField(labelWithString: "")
 
     private var isRunning = false
-    private let settingsPath = NSTemporaryDirectory() + "wiregard-setup.json"
+    private let settingsPath = NSTemporaryDirectory() + "microtunnel-setup.json"
 
     convenience init() {
         let window = NSWindow(
@@ -45,7 +49,7 @@ final class SetupWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Xprem VPN Setup"
+        window.title = "MyMicroTunnel Setup"
         // The engine's version, not the app's: the engine is what talks to AWS,
         // and in a source build the two can differ.
         window.subtitle = runBinary(["version"])
@@ -73,10 +77,14 @@ final class SetupWindowController: NSWindowController {
         let defaults = SetupDefaults()
         regionField.stringValue = defaults.region
         regionField.placeholderString = "taken from the profile when left empty"
-        stackField.stringValue = defaults.stackName
+        vpnProfileField.stringValue = defaults.vpnProfile
+        stackField.placeholderString = "microtunnel-<account-id>-<region>"
         domainField.placeholderString = "updates.example.com"
         portField.stringValue = defaults.servicePort
+        tcpPortsField.placeholderString = "optional, up to 10: 5432, 6379"
         healthPathField.stringValue = defaults.healthCheckPath
+        vpnCidrField.stringValue = defaults.vpnCidr
+        idleTimeoutField.stringValue = defaults.idleTimeout
         alarmEmailField.placeholderString = "optional"
 
         form.addArrangedSubview(sectionLabel("AWS credentials"))
@@ -88,10 +96,14 @@ final class SetupWindowController: NSWindowController {
 
         form.addArrangedSubview(spacer())
         form.addArrangedSubview(sectionLabel("Deployment"))
+        form.addArrangedSubview(labelled("VPN profile", vpnProfileField))
         form.addArrangedSubview(labelled("Stack name", stackField))
         form.addArrangedSubview(labelled("Public hostname", domainField))
         form.addArrangedSubview(labelled("Local service port", portField))
+        form.addArrangedSubview(labelled("Also publish TCP", tcpPortsField))
         form.addArrangedSubview(labelled("Health check path", healthPathField))
+        form.addArrangedSubview(labelled("Tunnel subnet", vpnCidrField))
+        form.addArrangedSubview(labelled("Idle timeout (min)", idleTimeoutField))
         form.addArrangedSubview(labelled("Notify on failure", alarmEmailField))
         form.addArrangedSubview(labelled("", superviseCheckbox))
 
@@ -100,7 +112,13 @@ final class SetupWindowController: NSWindowController {
             + "The VPC, subnets and Route53 zone are found automatically. You will be "
             + "asked to authorise one privileged step, which writes the tunnel "
             + "configuration, the sudoers rule and — if the box above is ticked — the "
-            + "supervisor.")
+            + "supervisor.\n\n"
+            + "A second VPN profile is a second deployment on this Mac: give it its own "
+            + "name and its own tunnel subnet, and it gets its own interface, its own "
+            + "stack and its own switch in the menu. An idle timeout above 0 switches the "
+            + "gateway off after that many minutes with no traffic, and the app wakes it "
+            + "again when you connect — cheaper, at the cost of about two minutes on the "
+            + "first connection of the day.")
         costNote.font = .systemFont(ofSize: 11)
         costNote.textColor = .secondaryLabelColor
 
@@ -175,6 +193,14 @@ final class SetupWindowController: NSWindowController {
         return row
     }
 
+    /// Trimmed text, or a fallback when the field was left empty. Every one of
+    /// these used to be an inline trimmingCharacters call, and two of them
+    /// disagreed about whether an all-spaces field counted as empty.
+    private func trimmed(_ field: NSTextField, or fallback: String) -> String {
+        let value = field.stringValue.trimmingCharacters(in: .whitespaces)
+        return value.isEmpty ? fallback : value
+    }
+
     private func loadProfiles() {
         let listed = runBinary(["profiles"]).split(separator: "\n").map(String.init)
         profileField.removeAllItems()
@@ -228,11 +254,25 @@ final class SetupWindowController: NSWindowController {
         var arguments = [
             "install", "--json", "--non-interactive",
             "--settings", settingsPath,
-            "--stack", stackField.stringValue,
+            "--vpn-profile", trimmed(vpnProfileField, or: "default"),
             "--domain", domain,
             "--port", portField.stringValue,
             "--health-path", healthPathField.stringValue,
+            "--idle-timeout", trimmed(idleTimeoutField, or: "0"),
         ]
+
+        // Left out when empty so the engine derives it from the account and
+        // the region, which is what makes a second deployment in one account
+        // not collide with the first.
+        if !trimmed(stackField, or: "").isEmpty {
+            arguments += ["--stack", stackField.stringValue]
+        }
+        if !trimmed(tcpPortsField, or: "").isEmpty {
+            arguments += ["--tcp-ports", tcpPortsField.stringValue]
+        }
+        if !trimmed(vpnCidrField, or: "").isEmpty {
+            arguments += ["--vpn-cidr", vpnCidrField.stringValue]
+        }
 
         // Left out entirely when empty, so the engine can fall back to the
         // region the profile already names rather than to a guess.
@@ -293,6 +333,7 @@ final class SetupWindowController: NSWindowController {
         var arguments = [
             "install", "--json", "--non-interactive", "--stage", "finish",
             "--settings", settingsPath, "--login-item",
+            "--vpn-profile", trimmed(vpnProfileField, or: "default"),
         ]
         if superviseCheckbox.state == .on {
             arguments += ["--supervise"]
@@ -443,11 +484,11 @@ enum SetupEngine {
     /// Prefers the copy inside the bundle, so the app is self-contained, and
     /// falls back to the one the package puts on the path.
     static var binaryPath: String {
-        if let bundled = Bundle.main.url(forResource: "wiregard-mini-vpn", withExtension: nil),
+        if let bundled = Bundle.main.url(forResource: "mymicrotunnel", withExtension: nil),
            FileManager.default.isExecutableFile(atPath: bundled.path) {
             return bundled.path
         }
-        return "/usr/local/bin/wiregard-mini-vpn"
+        return "/usr/local/bin/mymicrotunnel"
     }
 }
 
@@ -458,9 +499,14 @@ enum SetupEngine {
 /// a name in somebody else's zone.
 struct SetupDefaults {
     let region = ""
-    let stackName = "xprem-onprem-vpn"
+    let vpnProfile = "default"
     let servicePort = "3000"
     let healthCheckPath = "/hc"
+    let vpnCidr = "10.100.0.0/24"
+    /// 0 keeps the gateway running. It is the default because switching a
+    /// deployment off is a decision about money and latency that belongs to
+    /// whoever is paying, not to this installer.
+    let idleTimeout = "0"
 }
 
 func runCommand(_ path: String, _ arguments: [String]) -> (status: Int32, output: String) {
