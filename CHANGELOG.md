@@ -7,6 +7,38 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.2.0
+
+- VPN profiles are now something you can see and create. The menu lists every
+  deployment by name under **VPN Profiles**, each with its own switch, and
+  **New VPN Profile…** creates another — suggesting a name and a tunnel subnet
+  that does not overlap the ones you already have.
+- Whether a profile reconnects at login is a checkmark in the menu, per
+  profile, rather than a decision buried in the installer.
+- Uninstalling offers to delete the AWS stack with the profile, instead of
+  printing a command and hoping. The consequence is spelled out separately,
+  because it is a different one: the hostname stops answering for every Mac
+  registered to that deployment.
+- The region is a list of the regions your account can actually reach, and the
+  stack name fills itself in as `mymicrotunnel-<account-id>-<region>`. A
+  mistyped region used to surface much later as a confusing credentials error.
+- Setup explains itself on a first run: what to create in AWS, what kind of
+  hostname works, and what the one password prompt covers.
+- The credentials you type are now used once, to mint a narrower key for the
+  app itself, which is kept in your login Keychain. The app no longer runs as
+  you, and its own key cannot create more keys.
+- Fixed: the idle timeout switched the gateway off after about ninety seconds
+  whatever it was set to, because a load balancer with no traffic publishes no
+  metric at all rather than a zero.
+- Fixed: a tunnel whose subnet overlaps a network your Mac is already on is
+  refused, at install and at every connect, instead of quietly taking that
+  network away.
+- Fixed: the privileged step looked for the newly generated key in root's
+  temporary directory, wrote a configuration naming a key it never installed,
+  and left a tunnel that came up and could not load a private key.
+- Fixed: the setup window could grow taller than the screen, putting Install
+  out of reach. It scrolls, and the button no longer moves.
+
 ## 1.1.0
 
 - **The product is now called MyMicroTunnel.** The app, the command and the
