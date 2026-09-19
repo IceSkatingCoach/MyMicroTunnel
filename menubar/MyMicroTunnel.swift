@@ -165,6 +165,35 @@ struct Tunnel: Decodable {
 
     var healthCheckURL: URL? { healthCheckUrl.isEmpty ? nil : URL(string: healthCheckUrl) }
 
+    /// Turns "reconnect at login" on or off for this profile.
+    ///
+    /// Written straight into the profile's own files rather than through a
+    /// privileged helper, because nothing here needs privilege: the daemon
+    /// already runs as root and reads the store on every pass, so flipping
+    /// this field is the whole change. Both files are updated — settings.json
+    /// is what the daemon reads, config.json is what this menu reads — and
+    /// the rest of each file is preserved, since neither is this app's to
+    /// rewrite from scratch.
+    func setReconnectAtLogin(_ wanted: Bool) -> String? {
+        let directory = Tunnel.profilesDirectory.appendingPathComponent(profileName)
+        for (name, key) in [("settings.json", "supervise"), ("config.json", "supervised")] {
+            let path = directory.appendingPathComponent(name)
+            guard let data = try? Data(contentsOf: path),
+                  var stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else {
+                continue
+            }
+            stored[key] = wanted
+            guard let encoded = try? JSONSerialization.data(
+                    withJSONObject: stored, options: [.prettyPrinted, .sortedKeys]),
+                  (try? encoded.write(to: path, options: .atomic)) != nil
+            else {
+                return "Could not write \(path.path)"
+            }
+        }
+        return nil
+    }
+
     /// Records the user's decision for the supervisor to act on later. Writing
     /// it always, supervised or not, means turning supervision on afterwards
     /// starts from the right state instead of from nothing.
@@ -327,18 +356,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refreshState()
         menu.removeAllItems()
 
+        menu.addItem(disabledItem("VPN Profiles"))
         if profiles.isEmpty {
-            menu.addItem(disabledItem("Nothing deployed yet"))
+            menu.addItem(disabledItem("  none yet — Setup… creates the first"))
         }
 
-        for (index, profile) in profiles.enumerated() {
-            if index > 0 {
-                menu.addItem(.separator())
-            }
-            addItems(for: profile, to: menu, showName: profiles.count > 1)
+        // Every profile is named, even when there is only one. A machine that
+        // holds two needs to say which switch is which, and a machine that
+        // holds one should look the same as that machine will after the
+        // second is added — otherwise the list appears out of nowhere.
+        for profile in profiles {
+            menu.addItem(.separator())
+            addItems(for: profile, to: menu)
         }
 
         menu.addItem(.separator())
+
+        let newProfile = NSMenuItem(title: "New VPN Profile…", action: #selector(openNewProfile),
+                                    keyEquivalent: "n")
+        newProfile.target = self
+        newProfile.isEnabled = busy.isEmpty
+        menu.addItem(newProfile)
 
         let setup = NSMenuItem(title: "Setup…", action: #selector(openSetup), keyEquivalent: ",")
         setup.target = self
@@ -372,14 +410,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// One profile's block of the menu.
-    ///
-    /// The profile's name is only shown when there is more than one: a machine
-    /// with a single deployment should read exactly as it did before profiles
-    /// existed, because for most people that is still the whole story.
-    private func addItems(for profile: Tunnel, to menu: NSMenu, showName: Bool) {
-        if showName {
-            menu.addItem(disabledItem(profile.profileName))
-        }
+    private func addItems(for profile: Tunnel, to menu: NSMenu) {
+        menu.addItem(disabledItem(profile.profileName))
 
         let state: String
         if isBusy(profile) {
@@ -389,7 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             state = "Disconnected"
         }
-        menu.addItem(disabledItem(showName ? "  \(state)" : state))
+        menu.addItem(disabledItem("  " + state))
 
         if let error = lastError[profile.profileName] {
             menu.addItem(disabledItem("Last error:"))
@@ -398,9 +430,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
-        if profile.supervised {
-            menu.addItem(disabledItem("  Restored after a reboot"))
-        }
         if profile.idleTimeoutMinutes > 0 {
             menu.addItem(disabledItem("  Gateway sleeps after \(profile.idleTimeoutMinutes) idle minutes"))
         }
@@ -422,6 +451,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.isEnabled = !isBusy(profile)
         toggle.representedObject = profile.profileName
         menu.addItem(toggle)
+
+        // Which profiles come back on their own, and which wait to be asked.
+        // A checkmark rather than two menu items, because it is one decision
+        // with two states and the current one is worth seeing at a glance.
+        let reconnect = NSMenuItem(title: "Reconnect at login", action: #selector(toggleReconnect(_:)),
+                                   keyEquivalent: "")
+        reconnect.target = self
+        reconnect.state = profile.supervised ? .on : .off
+        reconnect.isEnabled = !isBusy(profile)
+        reconnect.representedObject = profile.profileName
+        menu.addItem(reconnect)
 
         let test = NSMenuItem(title: "Test tunnel", action: #selector(testTunnel(_:)),
                               keyEquivalent: first ? "t" : "")
@@ -572,6 +612,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         }
+    }
+
+    /// Flips whether a profile is put back up on its own after a reboot.
+    ///
+    /// The supervisor is machine-wide and is installed by setup, so a profile
+    /// can ask to be reconnected on a Mac where no daemon has ever been
+    /// installed. Saying so is better than silently recording a wish nothing
+    /// acts on.
+    @objc private func toggleReconnect(_ sender: Any?) {
+        guard let profile = profile(for: sender) else { return }
+
+        let wanted = !profile.supervised
+        if let problem = profile.setReconnectAtLogin(wanted) {
+            report(title: "Could not change that", message: problem)
+            return
+        }
+        refreshState()
+
+        let daemon = "/Library/LaunchDaemons/ca.maragato.mymicrotunnel.supervisor.plist"
+        if wanted && !FileManager.default.fileExists(atPath: daemon) {
+            report(
+                title: "Recorded, but nothing is watching yet",
+                message: "\(profile.profileName) will reconnect at login once the background "
+                    + "service is installed. Run Setup… for this profile and tick "
+                    + "\"Reconnect this profile at login\"; that is the step that installs it."
+            )
+        }
+    }
+
+    @objc private func openNewProfile() {
+        openSetup()
+        setupController?.startNewProfile()
     }
 
     @objc private func openHealthCheck(_ sender: Any?) {

@@ -22,6 +22,11 @@ final class SetupWindowController: NSWindowController {
     private let accessKeyField = NSTextField()
     private let secretKeyField = NSSecureTextField()
     private let regionField = NSTextField()
+    // Which deployment on this Mac is being set up. The picker lists the ones
+    // that exist and offers a new one; the name field is only for the latter,
+    // because renaming an installed profile from here would leave its tunnel,
+    // its key and its sudoers line under the old name.
+    private let vpnProfilePicker = NSPopUpButton(frame: .zero, pullsDown: false)
     private let vpnProfileField = NSTextField()
     private let stackField = NSTextField()
     private let domainField = NSTextField()
@@ -32,7 +37,8 @@ final class SetupWindowController: NSWindowController {
     private let idleTimeoutField = NSTextField()
     private let alarmEmailField = NSTextField()
     private let superviseCheckbox = NSButton(
-        checkboxWithTitle: "Restore the tunnel after a reboot", target: nil, action: nil)
+        checkboxWithTitle: "Reconnect this profile at login and after a reboot",
+        target: nil, action: nil)
 
     private let logView = NSTextView()
     private let progress = NSProgressIndicator()
@@ -41,6 +47,9 @@ final class SetupWindowController: NSWindowController {
 
     private var isRunning = false
     private let settingsPath = NSTemporaryDirectory() + "microtunnel-setup.json"
+
+    /// Title of the picker entry that means "not one of the installed ones".
+    private static let newProfileTitle = "New VPN Profile…"
 
     convenience init() {
         // Resizable, and never taller than the screen it opens on.
@@ -68,6 +77,13 @@ final class SetupWindowController: NSWindowController {
         self.init(window: window)
         buildLayout()
         loadProfiles()
+        loadVpnProfiles(select: nil)
+    }
+
+    /// Opens the window ready to create another deployment rather than to
+    /// re-run an existing one. The menu bar's "New VPN Profile…" lands here.
+    func startNewProfile() {
+        loadVpnProfiles(select: Self.newProfileTitle)
     }
 
     // MARK: - Layout
@@ -88,7 +104,10 @@ final class SetupWindowController: NSWindowController {
         let defaults = SetupDefaults()
         regionField.stringValue = defaults.region
         regionField.placeholderString = "taken from the profile when left empty"
+        vpnProfilePicker.target = self
+        vpnProfilePicker.action = #selector(vpnProfileChanged)
         vpnProfileField.stringValue = defaults.vpnProfile
+        vpnProfileField.placeholderString = "a name for this deployment, e.g. lab"
         stackField.placeholderString = "microtunnel-<account-id>-<region>"
         domainField.placeholderString = "updates.example.com"
         portField.stringValue = defaults.servicePort
@@ -107,7 +126,8 @@ final class SetupWindowController: NSWindowController {
 
         form.addArrangedSubview(spacer())
         form.addArrangedSubview(sectionLabel("Deployment"))
-        form.addArrangedSubview(labelled("VPN profile", vpnProfileField))
+        form.addArrangedSubview(labelled("VPN profile", vpnProfilePicker))
+        form.addArrangedSubview(labelled("Name", vpnProfileField))
         form.addArrangedSubview(labelled("Stack name", stackField))
         form.addArrangedSubview(labelled("Public hostname", domainField))
         form.addArrangedSubview(labelled("Local service port", portField))
@@ -241,6 +261,102 @@ final class SetupWindowController: NSWindowController {
     private func trimmed(_ field: NSTextField, or fallback: String) -> String {
         let value = field.stringValue.trimmingCharacters(in: .whitespaces)
         return value.isEmpty ? fallback : value
+    }
+
+    // MARK: - VPN profiles
+
+    /// Fills the picker and selects something sensible: the profile asked for,
+    /// otherwise the first installed one, otherwise a new one — which is what
+    /// a first run is.
+    private func loadVpnProfiles(select wanted: String?) {
+        let installed = Tunnel.installed().map(\.profileName)
+
+        vpnProfilePicker.removeAllItems()
+        vpnProfilePicker.addItems(withTitles: installed)
+        if !installed.isEmpty {
+            vpnProfilePicker.menu?.addItem(.separator())
+        }
+        vpnProfilePicker.addItem(withTitle: Self.newProfileTitle)
+
+        if let wanted, installed.contains(wanted) {
+            vpnProfilePicker.selectItem(withTitle: wanted)
+        } else if wanted != nil || installed.isEmpty {
+            vpnProfilePicker.selectItem(withTitle: Self.newProfileTitle)
+        } else {
+            vpnProfilePicker.selectItem(at: 0)
+        }
+        vpnProfileChanged()
+    }
+
+    @objc private func vpnProfileChanged() {
+        let selected = vpnProfilePicker.titleOfSelectedItem ?? Self.newProfileTitle
+        let isNew = selected == Self.newProfileTitle
+
+        vpnProfileField.isEnabled = isNew
+        if isNew {
+            // Suggested, not imposed: a second deployment usually wants its
+            // own tunnel subnet as well, and defaulting both together is what
+            // stops the install being refused for overlapping the first.
+            let installed = Tunnel.installed()
+            if vpnProfileField.stringValue.isEmpty || !installed.isEmpty {
+                vpnProfileField.stringValue = suggestedProfileName(installed.map(\.profileName))
+            }
+            if installed.count > 0 {
+                vpnCidrField.stringValue = suggestedVpnCidr(installed.count)
+                stackField.stringValue = ""
+                domainField.stringValue = ""
+            }
+            return
+        }
+
+        vpnProfileField.stringValue = selected
+        loadSettings(of: selected)
+    }
+
+    private func suggestedProfileName(_ taken: [String]) -> String {
+        if !taken.contains("default") { return "default" }
+        for index in 2... {
+            let candidate = "profile\(index)"
+            if !taken.contains(candidate) { return candidate }
+        }
+        return "profile"
+    }
+
+    /// 10.100, 10.110, 10.120 … one /24 per profile, far enough apart that a
+    /// deployment can grow into it and still not meet the next one.
+    private func suggestedVpnCidr(_ existing: Int) -> String {
+        "10.\(100 + existing * 10).0.0/24"
+    }
+
+    /// Reads a profile's recorded deployment back into the form, so re-running
+    /// setup for an installed profile does not mean retyping every answer.
+    private func loadSettings(of profileName: String) {
+        let path = Tunnel.profilesDirectory
+            .appendingPathComponent(profileName)
+            .appendingPathComponent("settings.json")
+        guard let data = try? Data(contentsOf: path),
+              let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return
+        }
+
+        func text(_ key: String) -> String { stored[key] as? String ?? "" }
+        regionField.stringValue = text("region")
+        stackField.stringValue = text("stackName")
+        domainField.stringValue = text("domainName")
+        portField.stringValue = text("servicePort")
+        healthPathField.stringValue = text("healthCheckPath")
+        vpnCidrField.stringValue = text("vpnCidr")
+        alarmEmailField.stringValue = text("alarmEmail")
+        tcpPortsField.stringValue = (stored["tcpPorts"] as? [String] ?? []).joined(separator: ", ")
+        idleTimeoutField.stringValue = String(stored["idleTimeoutMinutes"] as? Int ?? 0)
+        superviseCheckbox.state = (stored["supervise"] as? Bool ?? false) ? .on : .off
+
+        if let awsProfile = stored["profile"] as? String, !awsProfile.isEmpty {
+            credentialMode.selectItem(at: 0)
+            profileField.selectItem(withTitle: awsProfile)
+            credentialModeChanged()
+        }
     }
 
     private func loadProfiles() {
