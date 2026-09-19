@@ -7,6 +7,18 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.3.0
+
+- Every published port is now written `local:published`. A bare number
+  publishes the port under its own name, as before; `3000:8080` reaches port
+  3000 on your Mac and answers as port 8080 on the hostname. The rule covers
+  the HTTPS service too — `--port 3000:8443` moves it off 443 — so a service
+  already running somewhere no longer has to move to be published elsewhere,
+  and two deployments can publish different services on one well-known port.
+- Two listeners cannot share a published port and are refused before anything
+  is deployed. Two published ports may share a local one, which is a
+  reasonable thing to want.
+
 ## 1.2.0
 
 - VPN profiles are now something you can see and create. The menu lists every
