@@ -3,6 +3,7 @@ package infra
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -309,6 +310,27 @@ func TestStrippingProseLeavesTheBootScriptAlone(t *testing.T) {
 	for _, id := range logicalIDs() {
 		if !strings.Contains(deployable, "  "+id+":") {
 			t.Errorf("stripping prose lost the resource %s", id)
+		}
+	}
+}
+
+// An update replaces files; nothing on macOS reloads a process because its
+// file changed. Whatever was running before the update is still running the
+// old code afterwards, and all three of these were found doing exactly that.
+func TestThePostinstallRestartsWhatTheUpdateReplaced(t *testing.T) {
+	source, err := os.ReadFile("../cmd/build-pkg/main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := string(source)
+
+	for what, expected := range map[string]string{
+		"the menu bar app, whose bundle was just swapped": "pkill -f '/Applications/MyMicroTunnel.app",
+		"the supervisor, which keeps its old binary":      "launchctl kickstart -k system/ca.maragato.mymicrotunnel.supervisor",
+		"wireguard-go, which outlives both":               "mymicrotunnel reload",
+	} {
+		if !strings.Contains(script, expected) {
+			t.Errorf("the postinstall does not restart %s (looked for %q)", what, expected)
 		}
 	}
 }

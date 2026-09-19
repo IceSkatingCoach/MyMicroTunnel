@@ -65,6 +65,10 @@ func main() {
 		runDiagnose(os.Args[2:])
 	case "version", "--version":
 		fmt.Println(version.String())
+	case "reload":
+		// Run by the package's postinstall, as root, after an update has
+		// replaced the binaries underneath everything that is running.
+		runReload(os.Args[2:])
 	case "pubkey":
 		// Diagnosis, not ceremony: when a tunnel sends and never hears back,
 		// the question is whether the key on this machine is the one the
@@ -99,6 +103,7 @@ func usage() {
   profile    list this machine's VPN profiles, or show one
   wake       bring a gateway back after its idle timeout switched it off
   pubkey     print the public half of a private key, to compare identities
+  reload     re-raise every running tunnel on the new engine; used after an update
   tunnel     up, down or status for the local WireGuard interface
   diagnose   collect everything a support conversation would ask for
   supervise  run the reconcile loop; normally started by launchd
@@ -635,6 +640,45 @@ func runUninstall(args []string) {
 
 	if !*asJSON {
 		fmt.Println("\n✓ Uninstalled.")
+	}
+}
+
+// runReload puts every running tunnel back on the newly installed engine.
+//
+// An update replaces wireguard-go and this binary on disk and changes nothing
+// that is already running: the kernel keeps the old image mapped for as long
+// as the process lives. A tunnel raised before the update therefore goes on
+// carrying packets through the old engine indefinitely, and the fix people
+// reach for — quit the app — does not touch it either, because the engine is
+// not the app's child.
+//
+// Bouncing the tunnel is the whole trick, and it is why this is allowed to be
+// blunt: a second of downtime on a tunnel whose owner has just installed an
+// update is a fair price, and the alternative is software that reports a
+// version it is not running.
+func runReload(args []string) {
+	flags := flag.NewFlagSet("reload", flag.ExitOnError)
+	_ = flags.Parse(args)
+
+	if os.Geteuid() != 0 {
+		ui.Fail("Reloading the tunnels needs root; the package's postinstall runs this.")
+	}
+
+	for _, profile := range setup.AllProfileSettings() {
+		if profile.InterfaceName == "" || !tunnel.IsUp(profile.InterfaceName) {
+			continue
+		}
+		fmt.Printf("re-raising %s (%s)\n", profile.InterfaceName, profile.ProfileName)
+		if err := tunnel.Down(profile.InterfaceName); err != nil {
+			fmt.Printf("  could not drop %s: %v\n", profile.InterfaceName, err)
+			continue
+		}
+		if err := setup.RaiseTunnel(profile.InterfaceName, profile.TunnelConfigPath()); err != nil {
+			// Reported, not fatal: the supervisor puts a supervised tunnel
+			// back within its next pass, and a profile nobody supervises is
+			// one the menu bar can raise.
+			fmt.Printf("  could not raise %s: %v\n", profile.InterfaceName, err)
+		}
 	}
 }
 

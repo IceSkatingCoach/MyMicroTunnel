@@ -228,10 +228,32 @@ func stageScripts(buildDir string) string {
 	// nothing: the deployment needs the user's AWS credentials and their
 	// consent for the privileged step, neither of which exist here. It only
 	// opens the app, whose first run is the setup window.
+	// Everything that was already running is still running the old code: the
+	// payload has been replaced on disk, and nothing on macOS reloads a
+	// process because its file changed. Three things need saying so.
+	//
+	//   · the menu bar app, whose bundle has just been swapped underneath it;
+	//   · the supervisor daemon, which goes on executing the binary it
+	//     started with until launchd restarts it;
+	//   · wireguard-go, which is neither, and would carry packets through the
+	//     old engine until the tunnel is bounced.
+	//
+	// Bouncing the tunnel means a second of downtime during an update, which
+	// is a fair price for software that is actually running the version it
+	// reports.
 	postinstall := `#!/bin/sh
 consoleUser=$(/usr/bin/stat -f%Su /dev/console)
+
+/usr/bin/pkill -f '/Applications/MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel' 2>/dev/null
+
+if [ -f /Library/LaunchDaemons/ca.maragato.mymicrotunnel.supervisor.plist ]; then
+  /bin/launchctl kickstart -k system/ca.maragato.mymicrotunnel.supervisor 2>/dev/null
+fi
+
 if [ "$consoleUser" != "root" ] && [ -n "$consoleUser" ]; then
   uid=$(/usr/bin/id -u "$consoleUser")
+  home=$(/usr/bin/dscl . -read /Users/"$consoleUser" NFSHomeDirectory | /usr/bin/awk '{print $2}')
+  HOME="$home" /usr/local/bin/mymicrotunnel reload 2>/dev/null
   /bin/launchctl asuser "$uid" /usr/bin/sudo -u "$consoleUser" \
     /usr/bin/open -a /Applications/MyMicroTunnel.app
 fi

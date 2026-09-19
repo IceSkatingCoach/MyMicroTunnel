@@ -7,6 +7,16 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.0
+
+- Updating now actually replaces what is running. An update swaps the files
+  on disk and macOS does not reload a process because its file changed, so
+  until now the menu bar app, the background service and the tunnel itself all
+  carried on running the previous version — software reporting a version it
+  was not running. Installing an update quits the old app, restarts the
+  background service and re-raises any tunnel that is up, which costs a second
+  of connectivity and is worth it.
+
 ## 1.3.2
 
 - New `mymicrotunnel pubkey` prints the public half of a key file. When a
