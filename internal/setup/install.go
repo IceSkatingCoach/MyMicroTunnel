@@ -579,6 +579,24 @@ func RegisterLoginItem() {
 func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 	ui.Step("Verifying the whole path")
 
+	// A deployment with an idle timeout can switch itself off before anyone
+	// has used it: a load balancer that has never seen a connection publishes
+	// no metric at all, and the alarm reads that as silence. Measured on a
+	// fresh five-minute stack, it fired 1m24s after the load balancer existed
+	// — comfortably inside an install. Everything below would then fail
+	// against a gateway that is not there, and the install would report a
+	// broken deployment that is in fact working.
+	if s.IdleTimeoutMinutes > 0 && s.GatewayGroupName != "" {
+		if err := client.WakeGateway(ctx, awsops.WakeOptions{
+			RoleARN:    s.WakeRoleARN,
+			GroupName:  s.GatewayGroupName,
+			Wait:       4 * time.Minute,
+			OnProgress: func(message string) { ui.Info("%s", message) },
+		}); err != nil {
+			ui.Warn("Could not confirm the gateway is running: %v", err)
+		}
+	}
+
 	// Through sudo rather than in this process: the install may be running
 	// unprivileged, and this is the same command the menu bar is allowed to run.
 	up := sys.Run("/usr/bin/sudo", "-n", HelperPath, "tunnel", "up", s.InterfaceName)

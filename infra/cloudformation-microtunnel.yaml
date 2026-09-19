@@ -231,18 +231,15 @@ Parameters:
     Description: >-
       Minutes of no traffic through the load balancer after which the gateway
       is scaled to zero. 0 keeps it running. The instance is terminated rather
-      than stopped: it is an Auto Scaling group of one, its identity lives in
-      SSM and its address is an Elastic IP, so a replacement is the same
-      gateway — and a terminated instance costs nothing at all, where a stopped
-      one still pays for its volume.
+      than stopped: its identity is in SSM and its address is an Elastic IP, so
+      a replacement is the same gateway, and it then costs nothing at all.
 
   AppPrincipalArn:
     Type: String
     Default: ''
     Description: >-
       Who may assume the wake role: the IAM user or role the workstation's AWS
-      profile authenticates as. Empty trusts the account, which means any
-      principal in it that is itself allowed to call sts:AssumeRole.
+      profile authenticates as. Empty trusts the account.
 
   AlarmEmail:
     Type: String
@@ -645,11 +642,6 @@ Resources:
   # The alarm watches the load balancer, not the instance: the question is
   # whether anybody is reaching the service, and the tunnel's own keepalives
   # would make any instance-level metric look busy forever.
-  #
-  # ActiveFlowCount is not published when there are no flows at all, which is
-  # exactly the state being watched for, so missing data has to count as
-  # breaching. Without that the alarm would sit in INSUFFICIENT_DATA on a
-  # deployment nobody is using — the one case it exists for.
   ScaleToZeroPolicy:
     Condition: IdleStop
     Type: AWS::AutoScaling::ScalingPolicy
@@ -666,35 +658,47 @@ Resources:
     Properties:
       AlarmName: !Sub '${AWS::StackName}-idle'
       AlarmDescription: >-
-        No connection has crossed the load balancer for the configured idle
-        timeout, so the gateway is being scaled to zero. The workstation's own
-        client wakes it again on the next connection attempt.
-      Namespace: AWS/NetworkELB
-      MetricName: ActiveFlowCount
-      Dimensions:
-        - Name: LoadBalancer
-          Value: !GetAtt LoadBalancer.LoadBalancerFullName
-      Statistic: Maximum
-      # One datapoint per minute, and as many of them as the timeout asks for.
-      Period: 60
+        Nothing has crossed the load balancer for the idle timeout, so the
+        gateway is scaled to zero. The workstation wakes it on next use.
+      # FILL(...,0) is what makes the timeout mean what it says. An NLB
+      # publishes ActiveFlowCount only while there are flows, so the metric
+      # stops rather than reporting zero, and the raw metric with
+      # TreatMissingData: breaching alarms about 90 seconds after traffic
+      # stops whatever the timeout says — measured: a 5-minute timeout fired
+      # in 1m24s. Filling silence with zeroes makes N quiet minutes N minutes.
+      Metrics:
+        - Id: idle
+          Expression: FILL(flows, 0)
+          Label: Connections across the load balancer, with silence read as none
+          ReturnData: true
+        - Id: flows
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/NetworkELB
+              MetricName: ActiveFlowCount
+              Dimensions:
+                - Name: LoadBalancer
+                  Value: !GetAtt LoadBalancer.LoadBalancerFullName
+            Period: 60
+            Stat: Maximum
       EvaluationPeriods: !Ref IdleTimeoutMinutes
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
+      # A load balancer that has never been used publishes nothing at all, and
+      # FILL has nothing to fill, so this is still what decides the very first
+      # idle period after a deploy. The installer wakes the gateway before it
+      # verifies for exactly that reason.
       TreatMissingData: breaching
       AlarmActions:
         - !Ref ScaleToZeroPolicy
 
   # --- The wake role -------------------------------------------------------
   #
-  # What the workstation is allowed to do to this deployment when it finds the
-  # gateway switched off. Deliberately not the deploy identity: that one can
-  # create and delete everything here, and the app needs it several times a
-  # day, unattended, from a laptop.
-  #
-  # Setting the desired capacity to 1 is the whole grant. It cannot change the
-  # maximum, cannot launch anything of its own choosing — the launch template
-  # is the group's, not a parameter of this call — and cannot reach any other
-  # Auto Scaling group in the account.
+  # What the workstation may do when it finds the gateway switched off.
+  # Deliberately not the deploy identity: that one can delete everything here,
+  # and a laptop uses this several times a day, unattended. Asking this one
+  # group for one instance is the whole grant.
   WakeRole:
     Type: AWS::IAM::Role
     Properties:
@@ -1239,18 +1243,15 @@ Resources:
         - !Ref AlarmTopic
 
   # The same question asked of a deployment that switches itself off: not "is
-  # an instance running" but "is one missing that was asked for". A gateway
-  # scaled to zero by the idle timeout answers no; one that died and was not
-  # replaced answers yes.
+  # an instance running" but "is one missing that was asked for".
   GatewayShortAlarm:
     Type: AWS::CloudWatch::Alarm
     Condition: AlarmsGatewayShort
     Properties:
       AlarmName: !Sub '${AWS::StackName}-gateway-down'
       AlarmDescription: >-
-        The Auto Scaling group has fewer gateway instances in service than it
-        was asked for, so the hostname is dark and the replacement has not
-        worked.
+        Fewer gateway instances in service than were asked for: the hostname
+        is dark and the replacement has not worked.
       Metrics:
         - Id: shortfall
           Expression: desired - inservice
