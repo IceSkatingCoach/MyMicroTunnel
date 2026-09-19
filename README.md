@@ -135,8 +135,8 @@ The app opens by itself when the installer finishes.
 | **VPN profile** | `default`, unless this is a second deployment on the same Mac |
 | **Stack name** | Leave empty. It becomes `mymicrotunnel-<account-id>-<region>` |
 | **Public hostname** | The name to serve, three labels: `updates.example.com` |
-| **Local service port** | The port your service listens on, reached over HTTPS on 443 |
-| **Also publish TCP** | Optional. Up to ten more ports, e.g. `5432, 6379` |
+| **Service port** | `3000` — or `3000:8443` to publish it on a port other than 443 |
+| **Also publish** | Optional. Up to ten more, each `local:published`: `5432, 3000:8080` |
 | **Health check path** | A path that returns 200. Default `/hc` |
 | **Tunnel subnet** | The private range the tunnel uses. Default `10.100.0.0/24` |
 | **Idle timeout (min)** | Optional. Switch the gateway off after this many quiet minutes |
@@ -204,8 +204,12 @@ terminated at the load balancer. Up to ten further ports can be published as
 plain TCP, on the same hostname, forwarded untouched:
 
 ```sh
-mymicrotunnel install --domain updates.example.com --port 3000 --tcp-ports 5432,6379
+mymicrotunnel install --domain updates.example.com --port 3000 --tcp-ports 5432,3000:8080
 ```
+
+Every port is written `local:published`. A bare number publishes the port under
+its own name; `3000:8080` reaches port 3000 on this Mac and answers as port 8080
+on the hostname. `--port 3000:8443` moves the HTTPS service off 443.
 
 `updates.example.com:5432` then reaches port 5432 on this Mac. These are not
 TLS-terminated and are not health-checked with HTTP — the load balancer only

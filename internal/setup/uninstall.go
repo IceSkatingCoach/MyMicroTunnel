@@ -4,7 +4,6 @@ package setup
 import (
 	"context"
 	"os"
-	"strconv"
 
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/sys"
@@ -246,15 +245,18 @@ func withdrawFromDeployment(ctx context.Context, options UninstallOptions, confi
 
 	// Every exposed port is its own target group, and a port left registered
 	// is a listener that keeps routing to a workstation which has gone.
-	for port, arn := range TcpTargetGroups(outputs) {
-		number, err := strconv.Atoi(port)
+	for mapping, arn := range TcpTargetGroups(outputs) {
+		// The key is local:published; the registration was made with the
+		// local half, and the API matches on the pair, so deregistering with
+		// the published one would quietly leave the target in place.
+		parsed, err := ParsePortMapping(mapping)
 		if err != nil {
 			continue
 		}
-		if err := client.DeregisterTarget(ctx, arn, config.ClientAddress, int32(number)); err != nil {
-			ui.Warn("Could not deregister %s:%s: %v", config.ClientAddress, port, err)
+		if err := client.DeregisterTarget(ctx, arn, config.ClientAddress, parsed.Local); err != nil {
+			ui.Warn("Could not deregister %s:%d: %v", config.ClientAddress, parsed.Local, err)
 			continue
 		}
-		ui.Done("Deregistered from the load balancer on TCP %s", port)
+		ui.Done("Deregistered from the load balancer on TCP %s", mapping)
 	}
 }

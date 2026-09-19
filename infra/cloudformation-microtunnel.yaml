@@ -6,16 +6,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 #
 # WHY NOT AWS Site-to-Site VPN
 # ----------------------------
-# An AWS::EC2::CustomerGateway needs a fixed public IP address, because AWS is
-# the side that answers the IKE negotiation. The workstation sits behind a
-# residential NAT with a dynamic address, so that address is not usable as a
-# customer gateway. AWS does support a certificate-based customer gateway with
-# no IpAddress for exactly this case, but it requires an ACM Private CA at
-# roughly USD 400/month, which dwarfs everything else in this stack.
-#
-# WireGuard inverts the direction: the workstation dials out to a fixed Elastic
-# IP, so no inbound port forward is needed on the home router and a new ISP
-# lease just re-pins the tunnel on the next keepalive.
+# An AWS::EC2::CustomerGateway needs a fixed public IP, because AWS answers
+# the IKE negotiation. A workstation behind a residential NAT has no such
+# address. AWS does support a certificate-based customer gateway for exactly
+# this, at the price of an ACM Private CA — roughly USD 400/month, which
+# dwarfs everything else here. WireGuard inverts the direction: the
+# workstation dials out to a fixed Elastic IP, so no inbound port forward is
+# needed and a new ISP lease re-pins the tunnel on the next keepalive.
 #
 # TRAFFIC PATH
 # ------------
@@ -55,19 +52,13 @@ AWSTemplateFormatVersion: '2010-09-09'
 #
 # WHY THE GATEWAY IS AN AUTO SCALING GROUP OF ONE
 # -----------------------------------------------
-# A bare instance that fails stays failed until a human notices. A group of one
-# is replaced automatically. Two things follow from that, and both are handled
-# in UserData rather than here, because neither the replacement instance nor
-# its ENI has an id CloudFormation can refer to:
-#
-#   · the Elastic IP is associated by the instance itself, so the endpoint in
-#     every workstation's wg0.conf keeps pointing at a live gateway;
-#   · the VPN route is (re)written by the instance itself, at every boot.
-#
-# The server keypair is persisted in SSM as a SecureString and read back by the
-# replacement, so a replaced gateway keeps its WireGuard identity. Without that,
-# every replacement would silently invalidate the PublicKey line in each
-# workstation's config.
+# A bare instance that fails stays failed until a human notices; a group of one
+# is replaced. Two things follow, both handled in UserData because neither the
+# replacement instance nor its ENI has an id CloudFormation can name: the
+# instance associates the Elastic IP itself, and writes the VPN route itself,
+# at every boot. The server keypair lives in SSM as a SecureString and is read
+# back by the replacement — without that, every replacement would silently
+# invalidate the PublicKey line in every workstation's config.
 
 Parameters:
   ServiceDomainName:
@@ -134,6 +125,16 @@ Parameters:
     MinValue: 1
     MaxValue: 65535
     Description: Port the service listens on, on every workstation
+
+  TlsListenerPort:
+    Type: Number
+    Default: 443
+    MinValue: 1
+    MaxValue: 65535
+    Description: >-
+      Port the hostname answers HTTPS on. Every published port is a mapping of
+      a local port to a published one, and this is that mapping for the
+      TLS-terminated service; 443 is the one people can leave alone.
 
   # --- the exposed TCP ports ----------------------------------------------
   #
@@ -202,6 +203,71 @@ Parameters:
     MinValue: 0
     MaxValue: 65535
 
+  # Where each exposed slot lands on the workstation. Usually the same number
+  # as the listener, and deliberately not required to be: a service already
+  # running on 3000 should not have to move to be published on 8080. The
+  # default is 1 rather than 0 only because an unused slot builds no target
+  # group and CloudFormation still type-checks the value.
+  TcpTargetPort1:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort2:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort3:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort4:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort5:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort6:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort7:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort8:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort9:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
+  TcpTargetPort10:
+    Type: Number
+    Default: 1
+    MinValue: 1
+    MaxValue: 65535
+
   HealthCheckPath:
     Type: String
     Default: /hc
@@ -268,6 +334,9 @@ Parameters:
       every evening is an alarm nobody reads.
 
 Conditions:
+  # A hostname on 443 is written without a port, as anybody would; one on any
+  # other port is unusable without it.
+  StandardTlsPort: !Equals [!Ref TlsListenerPort, 443]
   HasAlarmEmail: !Not [!Equals [!Ref AlarmEmail, '']]
   HasAlarmWebhook: !Not [!Equals [!Ref AlarmWebhook, '']]
   # Either destination is reason enough to build the topic and the alarms.
@@ -785,7 +854,7 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::Listener
     Properties:
       LoadBalancerArn: !Ref LoadBalancer
-      Port: 443
+      Port: !Ref TlsListenerPort
       Protocol: TLS
       Certificates:
         - CertificateArn: !Ref Certificate
@@ -810,7 +879,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort1
+      Port: !Ref TcpTargetPort1
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -836,8 +905,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort1
-      ToPort: !Ref TcpPort1
+      FromPort: !Ref TcpTargetPort1
+      ToPort: !Ref TcpTargetPort1
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -848,7 +917,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort2
+      Port: !Ref TcpTargetPort2
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -874,8 +943,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort2
-      ToPort: !Ref TcpPort2
+      FromPort: !Ref TcpTargetPort2
+      ToPort: !Ref TcpTargetPort2
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -886,7 +955,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort3
+      Port: !Ref TcpTargetPort3
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -912,8 +981,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort3
-      ToPort: !Ref TcpPort3
+      FromPort: !Ref TcpTargetPort3
+      ToPort: !Ref TcpTargetPort3
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -924,7 +993,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort4
+      Port: !Ref TcpTargetPort4
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -950,8 +1019,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort4
-      ToPort: !Ref TcpPort4
+      FromPort: !Ref TcpTargetPort4
+      ToPort: !Ref TcpTargetPort4
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -962,7 +1031,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort5
+      Port: !Ref TcpTargetPort5
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -988,8 +1057,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort5
-      ToPort: !Ref TcpPort5
+      FromPort: !Ref TcpTargetPort5
+      ToPort: !Ref TcpTargetPort5
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -1000,7 +1069,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort6
+      Port: !Ref TcpTargetPort6
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -1026,8 +1095,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort6
-      ToPort: !Ref TcpPort6
+      FromPort: !Ref TcpTargetPort6
+      ToPort: !Ref TcpTargetPort6
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -1038,7 +1107,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort7
+      Port: !Ref TcpTargetPort7
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -1064,8 +1133,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort7
-      ToPort: !Ref TcpPort7
+      FromPort: !Ref TcpTargetPort7
+      ToPort: !Ref TcpTargetPort7
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -1076,7 +1145,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort8
+      Port: !Ref TcpTargetPort8
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -1102,8 +1171,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort8
-      ToPort: !Ref TcpPort8
+      FromPort: !Ref TcpTargetPort8
+      ToPort: !Ref TcpTargetPort8
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -1114,7 +1183,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort9
+      Port: !Ref TcpTargetPort9
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -1140,8 +1209,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort9
-      ToPort: !Ref TcpPort9
+      FromPort: !Ref TcpTargetPort9
+      ToPort: !Ref TcpTargetPort9
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -1152,7 +1221,7 @@ Resources:
       VpcId: !Ref VpcId
       TargetType: ip
       Protocol: TCP
-      Port: !Ref TcpPort10
+      Port: !Ref TcpTargetPort10
       HealthCheckProtocol: TCP
       HealthCheckIntervalSeconds: 30
       HealthyThresholdCount: 2
@@ -1178,8 +1247,8 @@ Resources:
     Properties:
       GroupId: !Ref GatewaySecurityGroup
       IpProtocol: tcp
-      FromPort: !Ref TcpPort10
-      ToPort: !Ref TcpPort10
+      FromPort: !Ref TcpTargetPort10
+      ToPort: !Ref TcpTargetPort10
       CidrIp: !Ref VpcCidr
       Description: NLB nodes towards an exposed TCP port
 
@@ -1317,10 +1386,16 @@ Resources:
 Outputs:
   ServiceUrl:
     Description: Public base URL for the on-premises deployment
-    Value: !Sub 'https://${ServiceDomainName}'
+    Value: !If
+      - StandardTlsPort
+      - !Sub 'https://${ServiceDomainName}'
+      - !Sub 'https://${ServiceDomainName}:${TlsListenerPort}'
 
   HealthCheckUrl:
-    Value: !Sub 'https://${ServiceDomainName}${HealthCheckPath}'
+    Value: !If
+      - StandardTlsPort
+      - !Sub 'https://${ServiceDomainName}${HealthCheckPath}'
+      - !Sub 'https://${ServiceDomainName}:${TlsListenerPort}${HealthCheckPath}'
 
   GatewayPublicIp:
     Description: WireGuard Endpoint for each workstation's wg0.conf
@@ -1330,48 +1405,48 @@ Outputs:
     Description: Target group the installer registers each workstation in
     Value: !Ref TargetGroup
 
-  # One exposed port and its target group, as port=arn. Pairs rather than two
-  # outputs each, because a slot holding no port has no target group at all and
-  # the installer cannot register into a name it had to guess.
+  # One exposed port and its target group, as local:published=arn. A slot
+  # holding no port has no target group at all, so the installer cannot
+  # reconstruct these names and they have to be said out loud.
   TcpTarget1:
     Condition: HasTcpPort1
-    Value: !Join ['=', [!Ref TcpPort1, !Ref TcpTargetGroup1]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort1, !Ref TcpPort1]], !Ref TcpTargetGroup1]]
 
   TcpTarget2:
     Condition: HasTcpPort2
-    Value: !Join ['=', [!Ref TcpPort2, !Ref TcpTargetGroup2]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort2, !Ref TcpPort2]], !Ref TcpTargetGroup2]]
 
   TcpTarget3:
     Condition: HasTcpPort3
-    Value: !Join ['=', [!Ref TcpPort3, !Ref TcpTargetGroup3]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort3, !Ref TcpPort3]], !Ref TcpTargetGroup3]]
 
   TcpTarget4:
     Condition: HasTcpPort4
-    Value: !Join ['=', [!Ref TcpPort4, !Ref TcpTargetGroup4]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort4, !Ref TcpPort4]], !Ref TcpTargetGroup4]]
 
   TcpTarget5:
     Condition: HasTcpPort5
-    Value: !Join ['=', [!Ref TcpPort5, !Ref TcpTargetGroup5]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort5, !Ref TcpPort5]], !Ref TcpTargetGroup5]]
 
   TcpTarget6:
     Condition: HasTcpPort6
-    Value: !Join ['=', [!Ref TcpPort6, !Ref TcpTargetGroup6]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort6, !Ref TcpPort6]], !Ref TcpTargetGroup6]]
 
   TcpTarget7:
     Condition: HasTcpPort7
-    Value: !Join ['=', [!Ref TcpPort7, !Ref TcpTargetGroup7]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort7, !Ref TcpPort7]], !Ref TcpTargetGroup7]]
 
   TcpTarget8:
     Condition: HasTcpPort8
-    Value: !Join ['=', [!Ref TcpPort8, !Ref TcpTargetGroup8]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort8, !Ref TcpPort8]], !Ref TcpTargetGroup8]]
 
   TcpTarget9:
     Condition: HasTcpPort9
-    Value: !Join ['=', [!Ref TcpPort9, !Ref TcpTargetGroup9]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort9, !Ref TcpPort9]], !Ref TcpTargetGroup9]]
 
   TcpTarget10:
     Condition: HasTcpPort10
-    Value: !Join ['=', [!Ref TcpPort10, !Ref TcpTargetGroup10]]
+    Value: !Join ['=', [!Join [':', [!Ref TcpTargetPort10, !Ref TcpPort10]], !Ref TcpTargetGroup10]]
 
   PeersParameter:
     Description: SSM parameter holding the WireGuard peer list

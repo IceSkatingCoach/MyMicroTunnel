@@ -151,7 +151,8 @@ final class SetupWindowController: NSWindowController {
         stackField.placeholderString = "mymicrotunnel-<account-id>-<region>"
         domainField.placeholderString = "updates.example.com"
         portField.stringValue = defaults.servicePort
-        tcpPortsField.placeholderString = "optional, up to 10: 5432, 6379"
+        portField.placeholderString = "3000, or 3000:8443 to publish it elsewhere"
+        tcpPortsField.placeholderString = "optional, up to 10: 5432, 3000:8080"
         healthPathField.stringValue = defaults.healthCheckPath
         vpnCidrField.stringValue = defaults.vpnCidr
         idleTimeoutField.stringValue = defaults.idleTimeout
@@ -180,8 +181,8 @@ final class SetupWindowController: NSWindowController {
         form.addArrangedSubview(labelled("Name", vpnProfileField))
         form.addArrangedSubview(labelled("Stack name", stackField))
         form.addArrangedSubview(labelled("Public hostname", domainField))
-        form.addArrangedSubview(labelled("Local service port", portField))
-        form.addArrangedSubview(labelled("Also publish TCP", tcpPortsField))
+        form.addArrangedSubview(labelled("Service port", portField))
+        form.addArrangedSubview(labelled("Also publish", tcpPortsField))
         form.addArrangedSubview(labelled("Health check path", healthPathField))
         form.addArrangedSubview(labelled("Tunnel subnet", vpnCidrField))
         form.addArrangedSubview(labelled("Idle timeout (min)", idleTimeoutField))
@@ -454,7 +455,12 @@ final class SetupWindowController: NSWindowController {
         selectRegion(text("region"))
         stackField.stringValue = text("stackName")
         domainField.stringValue = text("domainName")
-        portField.stringValue = text("servicePort")
+        // Shown the way it was typed: a bare number when the two halves
+        // agree, local:published when they do not.
+        let local = text("servicePort")
+        let published = text("publishedPort")
+        portField.stringValue = (published.isEmpty || published == "443" || published == local)
+            ? local : "\(local):\(published)"
         healthPathField.stringValue = text("healthCheckPath")
         vpnCidrField.stringValue = text("vpnCidr")
         alarmEmailField.stringValue = text("alarmEmail")
@@ -831,7 +837,7 @@ enum SetupEngine {
 /// a name in somebody else's zone.
 struct SetupDefaults {
     let vpnProfile = "default"
-    let servicePort = "3000"
+    let servicePort = "3000"  // published on 443 unless written local:published
     let healthCheckPath = "/hc"
     let vpnCidr = "10.100.0.0/24"
     /// 0 keeps the gateway running. It is the default because switching a

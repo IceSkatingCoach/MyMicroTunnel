@@ -267,46 +267,48 @@ func TestTheTemplateHasTenPortSlots(t *testing.T) {
 // sends this one inline — it is embedded in the binary precisely so a deploy
 // needs no bucket to stage it in.
 //
-// This is a real limit that was hit: adding the ten port slots took the
-// template to 51,287 bytes, which deploys nothing and reports a parameter-free
-// "template body exceeds maximum allowed size" from the first change set. The
-// margin below is there so the next paragraph of prose fails here, in a second,
-// rather than on a customer's first install.
+// The limit was hit twice while this template grew, and shaving paragraphs to
+// fit is a losing game that costs the next reader. What goes to the service is
+// now the template without its prose, so this measures that.
 func TestTemplateFitsCloudFormationsInlineLimit(t *testing.T) {
 	const limit = 51200
 	const margin = 1024
 
-	if size := len(Template); size > limit-margin {
-		t.Errorf("the template is %d bytes; CloudFormation accepts %d inline and this test "+
-			"keeps %d in reserve. Shorten a comment or stage the template in S3.",
+	if size := len(TemplateForDeploy()); size > limit-margin {
+		t.Errorf("the deployable template is %d bytes; CloudFormation accepts %d inline and "+
+			"this test keeps %d in reserve. Shorten a comment or stage the template in S3.",
 			size, limit, margin)
 	}
 }
 
-// The alias record is deliberately not a resource here.
-//
-// AWS::Route53::RecordSet cannot take over a name that already exists: it
-// fails the stack with "but it already exists" and rolls back a deployment
-// that was minutes from working. A hostname already pointed somewhere is the
-// normal case, so the installer writes the record with a Route53 UPSERT and
-// the template only reports where it should point.
-func TestTheHostnameRecordIsNotOwnedByTheStack(t *testing.T) {
-	// Matched as a resource declaration rather than anywhere in the file: the
-	// comment explaining why there is no such resource names the type too.
-	if strings.Contains(Template, "    Type: AWS::Route53::RecordSet") {
-		t.Error("the template creates the alias record again, so a hostname that already " +
-			"exists will roll the whole deployment back")
+// Stripping prose must not touch the boot script, where a # line is content.
+func TestStrippingProseLeavesTheBootScriptAlone(t *testing.T) {
+	deployable := TemplateForDeploy()
+
+	// The shebang above all: without it the instance runs the script under
+	// whatever happens to be reading it, and nothing about the failure says
+	// the template was edited on its way out.
+	if !strings.Contains(deployable, "#!/bin/bash") {
+		t.Error("the boot script lost its shebang")
 	}
-	for _, output := range []string{"LoadBalancerDnsName:", "LoadBalancerHostedZoneId:"} {
-		if !strings.Contains(Template, output) {
-			t.Errorf("the template does not output %s, so the installer cannot write the alias", output)
+	// A comment from inside the script, at the script's indentation.
+	if !strings.Contains(deployable, "# dnf's metadata parse is the memory high-water mark") {
+		t.Error("the boot script lost the comments a person reads on the gateway at 2am")
+	}
+	// And a template-level one is gone, which is the point.
+	if strings.Contains(deployable, "# WHY NOT AWS Site-to-Site VPN") {
+		t.Error("template prose was not stripped, so the byte budget buys nothing")
+	}
+
+	// Nothing but comments may go: every parameter and resource must survive.
+	for _, parameter := range Parameters() {
+		if !strings.Contains(deployable, "  "+parameter.Name+":") {
+			t.Errorf("stripping prose lost the parameter %s", parameter.Name)
 		}
 	}
-	// The zone is the customer's. Creating or deleting one would take their
-	// mail with it.
-	// AWS::Route53::HostedZone::Id is a parameter type and is fine; the
-	// resource type is not.
-	if strings.Contains(Template, "    Type: AWS::Route53::HostedZone\n") {
-		t.Error("the template creates a hosted zone")
+	for _, id := range logicalIDs() {
+		if !strings.Contains(deployable, "  "+id+":") {
+			t.Errorf("stripping prose lost the resource %s", id)
+		}
 	}
 }

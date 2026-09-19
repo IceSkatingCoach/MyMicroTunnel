@@ -109,8 +109,10 @@ Flags for install:
   --vpn-profile NAME     which deployment on this machine (default "default")
   --stack NAME           defaults to mymicrotunnel-<account-id>-<region>
   --domain HOST          the public hostname this deployment serves (required)
-  --port NUMBER          port the service listens on, on this machine
-  --tcp-ports LIST       up to 10 more TCP ports to expose, e.g. 5432,6379
+  --port LOCAL[:PUBLIC]  where the service listens, and where it is published
+                         (default 3000:443 — HTTPS on 443, service on 3000)
+  --tcp-ports LIST       up to 10 more ports, each LOCAL[:PUBLIC]:
+                         5432 publishes 5432; 3000:8080 publishes 3000 on 8080
   --idle-timeout MINUTES switch the gateway off after this much silence (0 = never)
   --health-path PATH     path the load balancer polls (default /hc)
   --vpc ID               VPC to deploy into; discovered when omitted
@@ -145,7 +147,7 @@ func runInstall(args []string) {
 	region := flags.String("region", "", "AWS region")
 	stackName := flags.String("stack", "", "CloudFormation stack name")
 	domainName := flags.String("domain", "", "public hostname")
-	servicePort := flags.String("port", defaults.ServicePort, "local service port")
+	servicePort := flags.String("port", defaults.ServicePort, "local[:published] port for the TLS-terminated service")
 	tcpPorts := flags.String("tcp-ports", "", "up to 10 more TCP ports to expose through the load balancer")
 	idleTimeout := flags.Int("idle-timeout", 0, "minutes of silence before the gateway is switched off")
 	interfaceName := flags.String("interface", "", "WireGuard interface; picked for the profile when omitted")
@@ -190,7 +192,20 @@ func runInstall(args []string) {
 	applyString(typed, "region", region, &settings.Region)
 	applyString(typed, "stack", stackName, &settings.StackName)
 	applyString(typed, "domain", domainName, &settings.DomainName)
-	applyString(typed, "port", servicePort, &settings.ServicePort)
+	if typed["port"] {
+		// One flag, two fields: everything downstream reads them separately.
+		mapping, err := setup.ParsePortMapping(*servicePort)
+		if err != nil {
+			ui.Fail("%v", err)
+		}
+		settings.ServicePort = strconv.Itoa(int(mapping.Local))
+		settings.PublishedPort = strconv.Itoa(int(mapping.Published))
+	} else if settings.ServicePort == "" {
+		settings.ServicePort = *servicePort
+	}
+	if settings.PublishedPort == "" {
+		settings.PublishedPort = "443"
+	}
 	applyString(typed, "health-path", healthPath, &settings.HealthCheckPath)
 	applyString(typed, "vpc", vpcID, &settings.VpcID)
 	applyString(typed, "hosted-zone", hostedZoneID, &settings.HostedZoneID)
@@ -208,7 +223,14 @@ func runInstall(args []string) {
 		settings.Supervise = *supervise
 	}
 	if typed["tcp-ports"] {
-		settings.TcpPorts = setup.ParseTcpPorts(*tcpPorts)
+		mappings, err := setup.ParsePortMappings(*tcpPorts)
+		if err != nil {
+			ui.Fail("%v", err)
+		}
+		settings.TcpPorts = nil
+		for _, mapping := range mappings {
+			settings.TcpPorts = append(settings.TcpPorts, mapping.String())
+		}
 	}
 	if typed["idle-timeout"] {
 		settings.IdleTimeoutMinutes = *idleTimeout
@@ -293,7 +315,8 @@ func runInstall(args []string) {
 			fmt.Printf("    hostname  %s\n", settings.ServiceURL())
 			fmt.Printf("    network   %s, subnets %s\n", settings.VpcID, strings.Join(settings.SubnetIDs, ", "))
 			fmt.Printf("    tunnel    %s, this machine at %s\n", settings.VpnCidr, settings.ClientAddress)
-			fmt.Printf("    target    %s:%s on this machine\n", settings.ClientAddress, settings.ServicePort)
+			fmt.Printf("    service   %s:%s here, published on %s\n",
+				settings.ClientAddress, settings.ServicePort, settings.ServiceURL())
 			if len(settings.TcpPorts) > 0 {
 				fmt.Printf("    also TCP  %s\n", strings.Join(settings.TcpPorts, ", "))
 			}

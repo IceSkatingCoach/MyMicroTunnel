@@ -83,9 +83,15 @@ type Settings struct {
 	Region          string `json:"region"`
 	AccountID       string `json:"accountId"`
 
-	StackName       string `json:"stackName"`
-	DomainName      string `json:"domainName"`
+	StackName  string `json:"stackName"`
+	DomainName string `json:"domainName"`
+
+	// ServicePort is where the service listens on this machine; PublishedPort
+	// is the port the hostname answers HTTPS on. Two fields rather than one
+	// mapping string because both are read on their own all over the place —
+	// the target registration wants the first, every URL wants the second.
 	ServicePort     string `json:"servicePort"`
+	PublishedPort   string `json:"publishedPort,omitempty"`
 	HealthCheckPath string `json:"healthCheckPath"`
 
 	// TcpPorts are exposed through the load balancer as plain TCP, in addition
@@ -172,6 +178,7 @@ func Defaults() Settings {
 		// from the account and the region once the credentials are known, by
 		// DefaultStackName.
 		ServicePort:     "3000",
+		PublishedPort:   "443",
 		HealthCheckPath: "/hc",
 		InterfaceName:   "wg0",
 		VpnCidr:         "10.100.0.0/24",
@@ -239,6 +246,9 @@ func DefaultStackName(accountID, region string) string {
 }
 
 func (s Settings) ServiceURL() string {
+	if published := s.ServiceMapping().Published; published != 443 {
+		return fmt.Sprintf("https://%s:%d", s.DomainName, published)
+	}
 	return "https://" + s.DomainName
 }
 
@@ -259,34 +269,6 @@ func (s Settings) Port() int32 {
 // out from a rejected change set is five minutes later than finding it out
 // here.
 const MaxTcpPorts = 10
-
-// TcpPortNumbers is the exposed ports as numbers, in the order given, skipping
-// anything that is not one.
-func (s Settings) TcpPortNumbers() []int32 {
-	ports := make([]int32, 0, len(s.TcpPorts))
-	for _, raw := range s.TcpPorts {
-		port, err := strconv.Atoi(strings.TrimSpace(raw))
-		if err != nil || port < 1 || port > 65535 {
-			continue
-		}
-		ports = append(ports, int32(port))
-	}
-	return ports
-}
-
-// ParseTcpPorts turns "5432, 6379" into the list the settings hold. Empty
-// entries are dropped rather than rejected, so a trailing comma is not an
-// error worth stopping an install for.
-func ParseTcpPorts(list string) []string {
-	var ports []string
-	for _, field := range strings.Split(list, ",") {
-		field = strings.TrimSpace(field)
-		if field != "" {
-			ports = append(ports, field)
-		}
-	}
-	return ports
-}
 
 // --- validation ------------------------------------------------------------
 
@@ -417,23 +399,23 @@ func (s Settings) portProblems() []string {
 			"%d TCP ports were asked for and the deployment has room for %d", len(s.TcpPorts), MaxTcpPorts))
 	}
 
-	seen := map[int]bool{}
+	// Published ports are what a listener binds, so no two may collide — with
+	// each other or with the TLS listener. Local ports may repeat: two public
+	// ports reaching one service is a legitimate thing to ask for.
+	published := map[int32]bool{s.ServiceMapping().Published: true}
 	for _, raw := range s.TcpPorts {
-		trimmed := strings.TrimSpace(raw)
-		port, err := strconv.Atoi(trimmed)
-		if err != nil || port < 1 || port > 65535 {
-			problems = append(problems, fmt.Sprintf("%q is not a port number", trimmed))
+		mapping, err := ParsePortMapping(raw)
+		if err != nil {
+			problems = append(problems, err.Error())
 			continue
 		}
-		if seen[port] {
-			problems = append(problems, fmt.Sprintf("port %d is listed twice", port))
+		if published[mapping.Published] {
+			problems = append(problems, fmt.Sprintf(
+				"port %d is published twice; two listeners cannot share one port", mapping.Published))
 			continue
 		}
-		seen[port] = true
-		if port == 443 {
-			problems = append(problems, "port 443 already carries the TLS listener for "+s.DomainName)
-		}
-		if port == 51820 {
+		published[mapping.Published] = true
+		if mapping.Published == 51820 {
 			problems = append(problems, "port 51820 is the WireGuard endpoint itself")
 		}
 	}

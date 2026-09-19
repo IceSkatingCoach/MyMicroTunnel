@@ -323,6 +323,10 @@
            it cannot work out: the region is a list of what your account can reach, and the
            stack name fills itself in as
            <code>mymicrotunnel-&lt;account-id&gt;-&lt;region&gt;</code>.</p>
+        <p>Every published port is written <code>local:published</code> — <code>5432</code>
+           publishes 5432 under its own name, <code>3000:8080</code> publishes the service
+           on your port 3000 as port 8080 on the hostname. The same applies to the HTTPS
+           service itself, which is <code>3000:443</code> unless you say otherwise.</p>
         <p>Optional on the same screen: further TCP ports to publish on that hostname, the
            tunnel's own subnet, an idle timeout that switches the gateway off when nothing
            is using it, an address to email when the gateway fails, and whether this profile

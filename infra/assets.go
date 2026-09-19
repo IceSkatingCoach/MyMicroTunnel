@@ -68,3 +68,30 @@ func Parameters() []Parameter {
 	}
 	return found
 }
+
+// TemplateForDeploy is what actually goes to CloudFormation: the template
+// without the prose.
+//
+// CloudFormation rejects a TemplateBody over 51,200 bytes, and this template
+// is mostly explanation — the reasoning behind a gateway that claims its own
+// Elastic IP, ten near-identical port slots, an alarm that reads silence as
+// idle. That reasoning is worth keeping in the file and worth nothing to the
+// service, which has been the wrong trade twice: once at 51,287 bytes and
+// again on adding per-slot target ports. Shaving paragraphs to fit is a
+// losing game and it costs the next reader.
+//
+// Only comments at the template's own indentation go. Anything indented ten
+// spaces or more is inside the boot script, where a # line is content: the
+// shebang above all, and the comments a person reads when they are on the
+// gateway at two in the morning wondering what wrote this file.
+func TemplateForDeploy() string {
+	var kept []string
+	for _, line := range strings.Split(Template, "\n") {
+		trimmed := strings.TrimLeft(line, " ")
+		if strings.HasPrefix(trimmed, "#") && len(line)-len(trimmed) < 10 {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}

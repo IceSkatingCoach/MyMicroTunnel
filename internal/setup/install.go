@@ -167,7 +167,7 @@ func Discover(ctx context.Context, client *awsops.Client, s *Settings) {
 func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 	ui.Step("Deploying %s (this takes a few minutes)", s.StackName)
 
-	if err := client.DeployStack(ctx, s.StackName, infra.Template, StackParameters(*s), func(resource string) {
+	if err := client.DeployStack(ctx, s.StackName, infra.TemplateForDeploy(), StackParameters(*s), func(resource string) {
 		ui.Info("%s", resource)
 	}); err != nil {
 		ui.Fail("The deployment failed: %v", err)
@@ -228,6 +228,7 @@ func StackParameters(s Settings) map[string]string {
 		"VpnCidr":            s.VpnCidr,
 		"GatewayVpnAddress":  s.GatewayAddress,
 		"ServicePort":        s.ServicePort,
+		"TlsListenerPort":    strconv.Itoa(int(s.ServiceMapping().Published)),
 		"HealthCheckPath":    s.HealthCheckPath,
 		"AlarmEmail":         s.AlarmEmail,
 		"AlarmWebhook":       s.AlarmWebhook,
@@ -242,33 +243,42 @@ func StackParameters(s Settings) map[string]string {
 	// would still be open.
 	for slot := 1; slot <= MaxTcpPorts; slot++ {
 		parameters[fmt.Sprintf("TcpPort%d", slot)] = "0"
+		// 1, not 0: an unused slot builds no target group, but CloudFormation
+		// type-checks the value anyway and a port of 0 is not one.
+		parameters[fmt.Sprintf("TcpTargetPort%d", slot)] = "1"
 	}
-	for index, port := range s.TcpPortNumbers() {
+	for index, mapping := range s.TcpMappings() {
 		if index >= MaxTcpPorts {
 			break
 		}
-		parameters[fmt.Sprintf("TcpPort%d", index+1)] = strconv.Itoa(int(port))
+		parameters[fmt.Sprintf("TcpPort%d", index+1)] = strconv.Itoa(int(mapping.Published))
+		parameters[fmt.Sprintf("TcpTargetPort%d", index+1)] = strconv.Itoa(int(mapping.Local))
 	}
 	return parameters
 }
 
-// TcpTargetGroups reads the port=arn outputs back into a map.
+// TcpTargetGroups reads the local:published=arn outputs back.
 //
-// The pairs are outputs rather than a naming convention the installer could
-// reconstruct, because a slot that holds no port produces no target group at
-// all and guessing its name would mean registering into something that does
-// not exist.
+// Keyed by the mapping rather than by either port alone: the published port
+// is unique, the local one is not — two published ports may both reach one
+// service — and the caller needs both, one to register with and one to
+// report.
+//
+// They are outputs rather than a naming convention the installer could
+// reconstruct, because a slot holding no port produces no target group at all
+// and guessing its name would mean registering into something that does not
+// exist.
 func TcpTargetGroups(outputs map[string]string) map[string]string {
 	groups := map[string]string{}
 	for key, value := range outputs {
 		if !strings.HasPrefix(key, "TcpTarget") {
 			continue
 		}
-		port, arn, found := strings.Cut(value, "=")
-		if !found || port == "" || arn == "" {
+		mapping, arn, found := strings.Cut(value, "=")
+		if !found || mapping == "" || arn == "" {
 			continue
 		}
-		groups[port] = arn
+		groups[mapping] = arn
 	}
 	return groups
 }
@@ -302,16 +312,16 @@ func RegisterWorkstation(ctx context.Context, client *awsops.Client, s Settings,
 	// machine registering separately. A port whose group is missing from the
 	// outputs is reported rather than skipped silently: it means the stack and
 	// the settings disagree about what is exposed.
-	for _, port := range s.TcpPortNumbers() {
-		arn := s.TcpTargetGroups[strconv.Itoa(int(port))]
+	for _, mapping := range s.TcpMappings() {
+		arn := s.TcpTargetGroups[fmt.Sprintf("%d:%d", mapping.Local, mapping.Published)]
 		if arn == "" {
-			ui.Warn("The stack exposes no target group for TCP %d; nothing was registered for it.", port)
+			ui.Warn("The stack exposes no target group for %s; nothing was registered for it.", mapping)
 			continue
 		}
-		if err := client.RegisterTarget(ctx, arn, s.ClientAddress, port); err != nil {
-			ui.Fail("Could not register %s:%d behind the load balancer: %v", s.ClientAddress, port, err)
+		if err := client.RegisterTarget(ctx, arn, s.ClientAddress, mapping.Local); err != nil {
+			ui.Fail("Could not register %s:%d behind the load balancer: %v", s.ClientAddress, mapping.Local, err)
 		}
-		ui.Done("%s:%d is a load balancer target", s.ClientAddress, port)
+		ui.Done("%s:%d answers on %s:%d", s.ClientAddress, mapping.Local, s.DomainName, mapping.Published)
 	}
 }
 

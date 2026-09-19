@@ -156,3 +156,71 @@ func TestTcpTargetGroupsReadsThePairsBack(t *testing.T) {
 		t.Error("the primary target group was read as an exposed TCP port")
 	}
 }
+
+// Every published port is a mapping, including the TLS one. The listener
+// takes the published half and the target group the local half; swapping them
+// builds a load balancer that answers on the wrong port and forwards to a
+// port nothing is listening on.
+func TestPortMappingsReachTheTemplateTheRightWayRound(t *testing.T) {
+	s := valid()
+	s.ServicePort = "3000"
+	s.PublishedPort = "8443"
+	s.TcpPorts = []string{"5432", "3000:8080"}
+
+	sent := StackParameters(s)
+
+	if sent["ServicePort"] != "3000" || sent["TlsListenerPort"] != "8443" {
+		t.Errorf("the service is %s published on %s", sent["ServicePort"], sent["TlsListenerPort"])
+	}
+	// A bare number is the same port on both sides.
+	if sent["TcpPort1"] != "5432" || sent["TcpTargetPort1"] != "5432" {
+		t.Errorf("slot 1 is %s -> %s", sent["TcpPort1"], sent["TcpTargetPort1"])
+	}
+	// And a mapping is not.
+	if sent["TcpPort2"] != "8080" || sent["TcpTargetPort2"] != "3000" {
+		t.Errorf("slot 2 publishes %s and reaches %s", sent["TcpPort2"], sent["TcpTargetPort2"])
+	}
+	// Unused slots still have a legal target port, or CloudFormation rejects
+	// the parameter before it notices the slot is switched off.
+	if sent["TcpTargetPort3"] != "1" {
+		t.Errorf("an unused slot has target port %q", sent["TcpTargetPort3"])
+	}
+}
+
+func TestPortMappingsAreReadBackWithBothHalves(t *testing.T) {
+	groups := TcpTargetGroups(map[string]string{
+		"TcpTarget1": "5432:5432=arn:aws:elasticloadbalancing:::targetgroup/a",
+		"TcpTarget2": "3000:8080=arn:aws:elasticloadbalancing:::targetgroup/b",
+	})
+
+	// Keyed by the mapping: the local port alone is not unique, because two
+	// published ports may reach one service.
+	if groups["3000:8080"] == "" {
+		t.Fatalf("the mapping was not read back: %v", groups)
+	}
+	mapping, err := ParsePortMapping("3000:8080")
+	if err != nil || mapping.Local != 3000 || mapping.Published != 8080 {
+		t.Errorf("parsed %+v (%v); registration would use the wrong port", mapping, err)
+	}
+}
+
+// Two listeners cannot share a port; two services can share a local one.
+func TestValidateRejectsAPublishedPortTwiceButAllowsALocalOne(t *testing.T) {
+	s := valid()
+	s.TcpPorts = []string{"3000:8080", "4000:8080"}
+	if err := s.Validate(); err == nil {
+		t.Error("two listeners were accepted on port 8080")
+	}
+
+	s.TcpPorts = []string{"3000:8080", "3000:9090"}
+	if err := s.Validate(); err != nil {
+		t.Errorf("publishing one service on two ports was refused: %v", err)
+	}
+
+	// And nothing may collide with the TLS listener, wherever it was put.
+	s.PublishedPort = "8443"
+	s.TcpPorts = []string{"3000:8443"}
+	if err := s.Validate(); err == nil {
+		t.Error("a port collided with the TLS listener and was accepted")
+	}
+}
