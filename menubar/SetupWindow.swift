@@ -47,8 +47,14 @@ final class SetupWindowController: NSWindowController {
         target: nil, action: nil)
 
     private let logView = NSTextView()
+    private let logScroll = NSScrollView()
     private let progress = NSProgressIndicator()
-    private let installButton = NSPushButton(title: "Install", target: nil, action: nil)
+    private let installButton = NSPushButton(title: "Deploy CloudFormation", target: nil, action: nil)
+
+    /// Held so the log can be folded away to nothing rather than merely
+    /// hidden: an NSView that is hidden still owns its constraints, and the
+    /// window would keep a 160-point hole where the log used to be.
+    private var logHeight: NSLayoutConstraint?
     private let statusLabel = NSTextField(labelWithString: "")
 
     private var isRunning = false
@@ -204,9 +210,12 @@ final class SetupWindowController: NSWindowController {
         costNote.font = .systemFont(ofSize: 11)
         costNote.textColor = .secondaryLabelColor
 
+        // Empty until there is something to say. A console taking up a third
+        // of the window before anything has run reads as an error region, and
+        // people asked what was wrong with it.
+        logScroll.isHidden = true
         logView.isEditable = false
         logView.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        let logScroll = NSScrollView()
         logScroll.documentView = logView
         logScroll.hasVerticalScroller = true
         logScroll.borderType = .bezelBorder
@@ -263,7 +272,7 @@ final class SetupWindowController: NSWindowController {
 
             logScroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
             logScroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
-            logScroll.heightAnchor.constraint(equalToConstant: 160),
+            logHeightConstraint(),
             logScroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
 
             footer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
@@ -317,6 +326,20 @@ final class SetupWindowController: NSWindowController {
 
     @objc private func openGuide() {
         NSWorkspace.shared.open(Self.guideURL)
+    }
+
+    private func logHeightConstraint() -> NSLayoutConstraint {
+        let constraint = logScroll.heightAnchor.constraint(equalToConstant: 0)
+        logHeight = constraint
+        return constraint
+    }
+
+    /// Unfolds the log, once, when the deploy starts.
+    private func revealLog() {
+        guard logScroll.isHidden else { return }
+        logScroll.isHidden = false
+        logHeight?.constant = 160
+        window?.contentView?.layoutSubtreeIfNeeded()
     }
 
     private func sectionLabel(_ text: String) -> NSTextField {
@@ -588,6 +611,7 @@ final class SetupWindowController: NSWindowController {
         progress.startAnimation(nil)
         statusLabel.stringValue = "Deploying…"
         logView.string = ""
+        revealLog()
 
         var arguments = [
             "install", "--json", "--non-interactive",
