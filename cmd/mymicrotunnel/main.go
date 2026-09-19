@@ -65,6 +65,12 @@ func main() {
 		runDiagnose(os.Args[2:])
 	case "version", "--version":
 		fmt.Println(version.String())
+	case "pubkey":
+		// Diagnosis, not ceremony: when a tunnel sends and never hears back,
+		// the question is whether the key on this machine is the one the
+		// gateway was told about, and nothing else could answer it without
+		// printing the private half somewhere it should not be.
+		runPubkey(os.Args[2:])
 	case "regions":
 		// Read by the setup window to fill its region picker.
 		runRegions(os.Args[2:])
@@ -92,6 +98,7 @@ func usage() {
   peers      list or remove the workstations a deployment serves from
   profile    list this machine's VPN profiles, or show one
   wake       bring a gateway back after its idle timeout switched it off
+  pubkey     print the public half of a private key, to compare identities
   tunnel     up, down or status for the local WireGuard interface
   diagnose   collect everything a support conversation would ask for
   supervise  run the reconcile loop; normally started by launchd
@@ -629,6 +636,26 @@ func runUninstall(args []string) {
 	if !*asJSON {
 		fmt.Println("\n✓ Uninstalled.")
 	}
+}
+
+// runPubkey prints the public half of a private key file. Never the private
+// half: the whole point is to compare identities in a place — a terminal, a
+// support thread — where the secret must not appear.
+func runPubkey(args []string) {
+	path := setup.Settings{}.ClientKeyPath()
+	if len(args) > 0 && args[0] != "" {
+		path = args[0]
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		ui.Fail("Could not read %s: %v", path, err)
+	}
+	public, err := tunnel.PublicKey(strings.TrimSpace(string(content)))
+	if err != nil {
+		ui.Fail("%s does not hold a WireGuard key: %v", path, err)
+	}
+	fmt.Println(public)
 }
 
 // runRegions prints the regions this account can deploy into, one per line,
