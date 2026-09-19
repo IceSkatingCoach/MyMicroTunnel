@@ -65,6 +65,9 @@ func main() {
 		runDiagnose(os.Args[2:])
 	case "version", "--version":
 		fmt.Println(version.String())
+	case "regions":
+		// Read by the setup window to fill its region picker.
+		runRegions(os.Args[2:])
 	case "default-stack":
 		// Exists so the setup window can show the name a deploy would choose
 		// instead of leaving the field blank or, worse, inheriting whatever
@@ -104,7 +107,7 @@ Flags for install:
   --secret-access-key K
   --region NAME          defaults to the region the profile names
   --vpn-profile NAME     which deployment on this machine (default "default")
-  --stack NAME           defaults to microtunnel-<account-id>-<region>
+  --stack NAME           defaults to mymicrotunnel-<account-id>-<region>
   --domain HOST          the public hostname this deployment serves (required)
   --port NUMBER          port the service listens on, on this machine
   --tcp-ports LIST       up to 10 more TCP ports to expose, e.g. 5432,6379
@@ -565,6 +568,31 @@ func runUninstall(args []string) {
 	if !*asJSON {
 		fmt.Println("\n✓ Uninstalled.")
 	}
+}
+
+// runRegions prints the regions this account can deploy into, one per line,
+// and nothing else. Silent on failure: the caller has a built-in list and a
+// window that cannot open because AWS was unreachable is worse than one
+// offering a region that turns out to need opting into.
+func runRegions(args []string) {
+	flags := flag.NewFlagSet("regions", flag.ExitOnError)
+	profile := flags.String("profile", "default", "AWS profile")
+	_ = flags.Parse(args)
+
+	ctx := context.Background()
+	region := awsops.ProfileRegion(ctx, *profile)
+	if region == "" {
+		region = "us-east-1"
+	}
+	client, err := awsops.LoadProfile(ctx, *profile, region)
+	if err != nil {
+		return
+	}
+	names, err := client.Regions(ctx)
+	if err != nil {
+		return
+	}
+	fmt.Println(strings.Join(names, "\n"))
 }
 
 // runDefaultStack prints the name a deploy would pick for a new deployment in

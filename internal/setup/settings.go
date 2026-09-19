@@ -235,7 +235,7 @@ func DefaultStackName(accountID, region string) string {
 	if accountID == "" || region == "" {
 		return ""
 	}
-	return "microtunnel-" + accountID + "-" + region
+	return "mymicrotunnel-" + accountID + "-" + region
 }
 
 func (s Settings) ServiceURL() string {

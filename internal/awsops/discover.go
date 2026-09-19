@@ -289,3 +289,27 @@ func (c *Client) changeAlias(ctx context.Context, action r53types.ChangeAction, 
 	})
 	return err
 }
+
+// Regions lists the regions this account may deploy into.
+//
+// Asked of the account rather than compiled in, because the answer differs
+// per account: a region that has to be opted into does not appear until it
+// has been, and deploying into one that has not been enabled fails with an
+// authentication error that says nothing about opt-in. The caller falls back
+// to a built-in list when there are no credentials yet, which is the state
+// the setup window opens in.
+func (c *Client) Regions(ctx context.Context) ([]string, error) {
+	out, err := c.EC2.DescribeRegions(ctx, &ec2.DescribeRegionsInput{})
+	if err != nil {
+		return nil, err
+	}
+
+	names := make([]string, 0, len(out.Regions))
+	for _, region := range out.Regions {
+		if name := aws.ToString(region.RegionName); name != "" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}

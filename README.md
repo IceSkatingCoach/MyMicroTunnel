@@ -133,7 +133,7 @@ The app opens by itself when the installer finishes.
 | **AWS credentials** | An existing profile, or *Enter an access key* and the two values from step 1 |
 | **Region** | Leave empty to use the region your profile already names |
 | **VPN profile** | `default`, unless this is a second deployment on the same Mac |
-| **Stack name** | Leave empty. It becomes `microtunnel-<account-id>-<region>` |
+| **Stack name** | Leave empty. It becomes `mymicrotunnel-<account-id>-<region>` |
 | **Public hostname** | The name to serve, three labels: `updates.example.com` |
 | **Local service port** | The port your service listens on, reached over HTTPS on 443 |
 | **Also publish TCP** | Optional. Up to ten more ports, e.g. `5432, 6379` |

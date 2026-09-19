@@ -12,7 +12,7 @@ import (
 // updating it.
 func TestDefaultStackNameIsPerAccountAndRegion(t *testing.T) {
 	name := DefaultStackName("123456789012", "us-east-2")
-	if name != "microtunnel-123456789012-us-east-2" {
+	if name != "mymicrotunnel-123456789012-us-east-2" {
 		t.Errorf("the default stack name is %q", name)
 	}
 	if !stackNamePattern.MatchString(name) {
@@ -102,7 +102,7 @@ func TestProfilesWithOverlappingTunnelSubnetsAreRefused(t *testing.T) {
 	second := valid()
 	second.ProfileName = "lab"
 	second.InterfaceName = "wg1"
-	second.StackName = "microtunnel-123456789012-eu-west-1"
+	second.StackName = "mymicrotunnel-123456789012-eu-west-1"
 	second.VpnCidr = "10.100.0.0/25"
 	second.ClientAddress = "10.100.0.9"
 

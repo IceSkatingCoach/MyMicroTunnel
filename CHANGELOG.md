@@ -41,7 +41,7 @@ The format is one `## <version>` heading per release, newest first.
   overlaps a network this Mac is already on or another profile's subnet. The
   old behaviour was to come up and quietly take the LAN away: no printer, no
   router, no obvious cause.
-- The default stack name is now `microtunnel-<account-id>-<region>`, so a second
+- The default stack name is now `mymicrotunnel-<account-id>-<region>`, so a second
   deployment in an account no longer has to be named by hand to avoid
   overwriting the first.
 

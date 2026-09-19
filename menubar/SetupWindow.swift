@@ -21,7 +21,13 @@ final class SetupWindowController: NSWindowController {
     private let profileField = NSPopUpButton(frame: .zero, pullsDown: false)
     private let accessKeyField = NSTextField()
     private let secretKeyField = NSSecureTextField()
-    private let regionField = NSTextField()
+    // A picker, not a field: a mistyped region is only discovered after
+    // authentication, as a confusing credentials error, and the list is worth
+    // seeing anyway — the region decides latency and price. The built-in list
+    // is replaced by what the account can actually reach as soon as there are
+    // credentials to ask with, because a region that has to be opted into is
+    // not deployable until it has been.
+    private let regionPicker = NSPopUpButton(frame: .zero, pullsDown: false)
     // Which deployment on this Mac is being set up. The picker lists the ones
     // that exist and offers a new one; the name field is only for the latter,
     // because renaming an installed profile from here would leave its tunnel,
@@ -51,6 +57,25 @@ final class SetupWindowController: NSWindowController {
     /// Title of the picker entry that means "not one of the installed ones".
     private static let newProfileTitle = "New VPN Profile…"
 
+    /// Entry that leaves the region unset, so the engine takes whatever the
+    /// AWS profile already names — which is right far more often than any
+    /// guess this window could make.
+    private static let profileRegionTitle = "From the AWS profile"
+
+    /// Shown before there are credentials to ask the account with. Commercial
+    /// regions only: GovCloud and the China partitions need their own
+    /// credentials and would not work if picked here by accident.
+    private static let knownRegions = [
+        "us-east-1", "us-east-2", "us-west-1", "us-west-2",
+        "ca-central-1", "ca-west-1", "sa-east-1",
+        "eu-west-1", "eu-west-2", "eu-west-3", "eu-central-1", "eu-central-2",
+        "eu-north-1", "eu-south-1", "eu-south-2",
+        "af-south-1", "il-central-1", "me-central-1", "me-south-1",
+        "ap-south-1", "ap-south-2", "ap-southeast-1", "ap-southeast-2",
+        "ap-southeast-3", "ap-southeast-4", "ap-northeast-1", "ap-northeast-2",
+        "ap-northeast-3", "ap-east-1",
+    ]
+
     convenience init() {
         // Resizable, and never taller than the screen it opens on.
         //
@@ -78,6 +103,7 @@ final class SetupWindowController: NSWindowController {
         buildLayout()
         loadProfiles()
         loadVpnProfiles(select: nil)
+        refreshRegions()
     }
 
     /// Opens the window ready to create another deployment rather than to
@@ -102,15 +128,16 @@ final class SetupWindowController: NSWindowController {
         credentialMode.action = #selector(credentialModeChanged)
 
         let defaults = SetupDefaults()
-        regionField.stringValue = defaults.region
-        regionField.placeholderString = "taken from the profile when left empty"
         vpnProfilePicker.target = self
         vpnProfilePicker.action = #selector(vpnProfileChanged)
-        regionField.target = self
-        regionField.action = #selector(regionChanged)
+        regionPicker.target = self
+        regionPicker.action = #selector(regionChanged)
+        regionPicker.addItem(withTitle: Self.profileRegionTitle)
+        regionPicker.menu?.addItem(.separator())
+        regionPicker.addItems(withTitles: Self.knownRegions)
         vpnProfileField.stringValue = defaults.vpnProfile
         vpnProfileField.placeholderString = "a name for this deployment, e.g. lab"
-        stackField.placeholderString = "microtunnel-<account-id>-<region>"
+        stackField.placeholderString = "mymicrotunnel-<account-id>-<region>"
         domainField.placeholderString = "updates.example.com"
         portField.stringValue = defaults.servicePort
         tcpPortsField.placeholderString = "optional, up to 10: 5432, 6379"
@@ -124,7 +151,7 @@ final class SetupWindowController: NSWindowController {
         form.addArrangedSubview(labelled("Profile", profileField))
         form.addArrangedSubview(labelled("Access key id", accessKeyField))
         form.addArrangedSubview(labelled("Secret access key", secretKeyField))
-        form.addArrangedSubview(labelled("Region", regionField))
+        form.addArrangedSubview(labelled("Region", regionPicker))
 
         form.addArrangedSubview(spacer())
         form.addArrangedSubview(sectionLabel("Deployment"))
@@ -260,6 +287,20 @@ final class SetupWindowController: NSWindowController {
     /// Trimmed text, or a fallback when the field was left empty. Every one of
     /// these used to be an inline trimmingCharacters call, and two of them
     /// disagreed about whether an all-spaces field counted as empty.
+    /// The region the user picked, or "" when they left it to the profile.
+    private var selectedRegion: String {
+        let title = regionPicker.titleOfSelectedItem ?? Self.profileRegionTitle
+        return title == Self.profileRegionTitle ? "" : title
+    }
+
+    private func selectRegion(_ region: String) {
+        if region.isEmpty || regionPicker.item(withTitle: region) == nil {
+            regionPicker.selectItem(withTitle: Self.profileRegionTitle)
+            return
+        }
+        regionPicker.selectItem(withTitle: region)
+    }
+
     private func trimmed(_ field: NSTextField, or fallback: String) -> String {
         let value = field.stringValue.trimmingCharacters(in: .whitespaces)
         return value.isEmpty ? fallback : value
@@ -348,7 +389,7 @@ final class SetupWindowController: NSWindowController {
         }
 
         func text(_ key: String) -> String { stored[key] as? String ?? "" }
-        regionField.stringValue = text("region")
+        selectRegion(text("region"))
         stackField.stringValue = text("stackName")
         domainField.stringValue = text("domainName")
         portField.stringValue = text("servicePort")
@@ -363,6 +404,31 @@ final class SetupWindowController: NSWindowController {
             credentialMode.selectItem(at: 0)
             profileField.selectItem(withTitle: awsProfile)
             credentialModeChanged()
+        }
+    }
+
+    /// Replaces the built-in list with the regions this account can actually
+    /// reach. Keeps the current selection if it survives the swap.
+    private func refreshRegions() {
+        let awsProfile = credentialMode.indexOfSelectedItem == 0
+            ? (profileField.titleOfSelectedItem ?? "default")
+            : "default"
+
+        DispatchQueue.global(qos: .utility).async {
+            let listed = runBinary(["regions", "--profile", awsProfile])
+                .split(separator: "\n")
+                .map(String.init)
+                .filter { !$0.isEmpty }
+            guard listed.count > 1 else { return }
+
+            DispatchQueue.main.async {
+                let chosen = self.selectedRegion
+                self.regionPicker.removeAllItems()
+                self.regionPicker.addItem(withTitle: Self.profileRegionTitle)
+                self.regionPicker.menu?.addItem(.separator())
+                self.regionPicker.addItems(withTitles: listed)
+                self.selectRegion(chosen)
+            }
         }
     }
 
@@ -396,7 +462,7 @@ final class SetupWindowController: NSWindowController {
         let awsProfile = credentialMode.indexOfSelectedItem == 0
             ? (profileField.titleOfSelectedItem ?? "default")
             : "default"
-        let region = trimmed(regionField, or: "")
+        let region = selectedRegion
 
         DispatchQueue.global(qos: .userInitiated).async {
             var arguments = ["default-stack", "--profile", awsProfile]
@@ -422,6 +488,7 @@ final class SetupWindowController: NSWindowController {
            vpnProfilePicker.titleOfSelectedItem == Self.newProfileTitle {
             showDerivedStackName()
         }
+        refreshRegions()
     }
 
     // MARK: - Running
@@ -479,8 +546,8 @@ final class SetupWindowController: NSWindowController {
 
         // Left out entirely when empty, so the engine can fall back to the
         // region the profile already names rather than to a guess.
-        if !regionField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
-            arguments += ["--region", regionField.stringValue]
+        if !selectedRegion.isEmpty {
+            arguments += ["--region", selectedRegion]
         }
         if !alarmEmailField.stringValue.trimmingCharacters(in: .whitespaces).isEmpty {
             arguments += ["--alarm-email", alarmEmailField.stringValue]
@@ -701,7 +768,6 @@ enum SetupEngine {
 /// default would be one particular deployment's, and accepting it would claim
 /// a name in somebody else's zone.
 struct SetupDefaults {
-    let region = ""
     let vpnProfile = "default"
     let servicePort = "3000"
     let healthCheckPath = "/hc"
