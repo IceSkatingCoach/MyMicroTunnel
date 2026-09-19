@@ -584,6 +584,24 @@ func InstallApp(repoRoot string) {
 		ui.Fail("%s is missing and there are no sources to build it from.", InstalledAppPath)
 	}
 
+	// Never as root. The privileged stage runs from the same checkout, and a
+	// build it performs leaves root-owned objects under menubar/build that
+	// the developer who owns the tree cannot delete or overwrite — every
+	// later build then fails on "File exists" from lipo, with nothing saying
+	// why. Observed exactly that way.
+	if os.Geteuid() == 0 {
+		if sys.Exists(filepath.Join(menubarDir, "build", "MyMicroTunnel.app")) {
+			ui.Step("Menu bar app")
+			if result := sys.Run("cp", "-R",
+				filepath.Join(menubarDir, "build", "MyMicroTunnel.app"), "/Applications/"); result.OK() {
+				ui.Done("%s", InstalledAppPath)
+				return
+			}
+		}
+		ui.Warn("Not building the app as root; run `make -C menubar install` as yourself.")
+		return
+	}
+
 	ui.Step("Building the menu bar app")
 	if sys.RunInteractive("make", "-C", menubarDir, "app") != 0 {
 		ui.Fail("The app did not build.")

@@ -37,6 +37,9 @@ app: engine
 		-F $(SPARKLE) -framework Sparkle \
 		-Xlinker -rpath -Xlinker @executable_path/../Frameworks \
 		-o build/slices/MyMicroTunnel.x86_64 $(SOURCES)
+	# Removed first: lipo refuses to write over an existing output, and a
+	# previous build performed as root leaves one nobody can overwrite.
+	rm -f $(BIN)
 	lipo -create -output $(BIN) build/slices/MyMicroTunnel.arm64 build/slices/MyMicroTunnel.x86_64
 	rm -rf build/slices
 	rm -rf $(DEST)/Contents/Frameworks/Sparkle.framework

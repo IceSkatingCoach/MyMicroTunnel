@@ -278,9 +278,10 @@
     <ol class="steps">
       <li>
         <h3>Create AWS credentials for the installer</h3>
-        <p>One click, in whichever AWS account you are signed into:</p>
+        <p>One click, in whichever AWS account you are signed into. It creates two IAM
+           users: one that installs, and a narrower one the app runs as afterwards.</p>
         <p><a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fmymicrotunnel-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role">Create the deploy identity</a></p>
-        <p>That builds an IAM user holding only the permissions the installer uses — you can
+        <p>Both hold only the permissions this product uses — you can
            read every one of them in
            <a href="https://mymicrotunnel.maragato.ca/deploy-role.yaml">the template</a> before you
            run it. It deliberately does <em>not</em> hand you a secret: stack outputs are
@@ -291,7 +292,11 @@
       <li>
         <h3>Check your hosted zone</h3>
         <p>You need a public Route53 zone for the domain you will serve from. The installer
-           finds it on its own; it only has to exist.</p>
+           finds it on its own; it only has to exist, and it is never created, changed or
+           deleted by this.</p>
+        <p>The hostname needs three labels — <code>updates.example.com</code>, not
+           <code>example.com</code>, which is the zone apex your website usually sits on.
+           If the name already exists it is repointed rather than refused.</p>
       </li>
       <li>
         <h3>Download and open the installer</h3>
@@ -301,10 +306,18 @@
            itself from then on, so this link is only ever needed once.</p>
       </li>
       <li>
-        <h3>Answer six questions</h3>
-        <p>Credentials, the hostname to serve, your service's port, and — optionally — an
-           address to email when the gateway fails and whether the tunnel should come back
-           after a reboot.</p>
+        <h3>Fill in the setup window</h3>
+        <p>It opens by itself, and on a first run it repeats these steps in front of you.
+           Credentials, the hostname to serve and your service's port are the only things
+           it cannot work out: the region is a list of what your account can reach, and the
+           stack name fills itself in as
+           <code>mymicrotunnel-&lt;account-id&gt;-&lt;region&gt;</code>.</p>
+        <p>Optional on the same screen: further TCP ports to publish on that hostname, the
+           tunnel's own subnet, an idle timeout that switches the gateway off when nothing
+           is using it, an address to email when the gateway fails, and whether this profile
+           reconnects at login.</p>
+        <p>The credentials you type are used once — to mint the app's own key, which is kept
+           in your login Keychain. The app does not keep yours.</p>
       </li>
       <li>
         <h3>Approve one password prompt</h3>
@@ -323,6 +336,17 @@
 <pre><code>mymicrotunnel install --domain updates.example.com --port 3000
 mymicrotunnel status
 mymicrotunnel peers</code></pre>
+
+    <h3>More than one deployment on one Mac</h3>
+    <p>A VPN profile is one deployment as this Mac sees it: its own stack, tunnel subnet,
+       WireGuard interface, published ports and switch in the menu. <strong>New VPN
+       Profile…</strong> in the menu bar creates another, suggesting a name and a subnet
+       that does not overlap the ones you already have.</p>
+<pre><code>mymicrotunnel install --vpn-profile lab --domain lab.example.com --vpn-cidr 10.110.0.0/24
+mymicrotunnel profile list
+mymicrotunnel uninstall --vpn-profile lab --delete-stack</code></pre>
+    <p>Each profile decides for itself whether it comes back at login — a checkmark in the
+       menu — and removing one offers to delete its AWS stack with it.</p>
   </section>
 
   <section id="costs">
