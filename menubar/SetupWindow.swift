@@ -43,12 +43,23 @@ final class SetupWindowController: NSWindowController {
     private let settingsPath = NSTemporaryDirectory() + "microtunnel-setup.json"
 
     convenience init() {
+        // Resizable, and never taller than the screen it opens on.
+        //
+        // The form grew — a VPN profile, the exposed ports, the tunnel subnet,
+        // an idle timeout — and a fixed 620-point window on a laptop display
+        // put the Install button below the bottom edge, where it could not be
+        // reached or even seen. A window that cannot be resized has no way out
+        // of that. The form scrolls now and the button is pinned outside the
+        // scrolling area, so no amount of further growth can hide it again.
+        let visible = NSScreen.main?.visibleFrame.height ?? 900
+        let height = min(660, max(420, visible - 80))
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 620),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 660, height: height),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.minSize = NSSize(width: 620, height: 420)
         window.title = "MyMicroTunnel Setup"
         // The engine's version, not the app's: the engine is what talks to AWS,
         // and in a source build the two can differ.
@@ -144,23 +155,54 @@ final class SetupWindowController: NSWindowController {
         footer.spacing = 8
         footer.translatesAutoresizingMaskIntoConstraints = false
 
-        let stack = NSStackView(views: [form, costNote, logScroll, footer])
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 14
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
-        stack.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(stack)
+        // Only the questions scroll. The log and the Install button are
+        // pinned to the bottom of the window, so the button is reachable on
+        // any screen and the log is visible while the install runs — which is
+        // the whole point of showing it.
+        let questions = NSStackView(views: [form, costNote])
+        questions.orientation = .vertical
+        questions.alignment = .leading
+        questions.spacing = 14
+        questions.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 10, right: 20)
+        questions.translatesAutoresizingMaskIntoConstraints = false
 
+        let formScroll = NSScrollView()
+        formScroll.documentView = questions
+        formScroll.hasVerticalScroller = true
+        formScroll.drawsBackground = false
+        formScroll.borderType = .noBorder
+        formScroll.translatesAutoresizingMaskIntoConstraints = false
+
+        contentView.addSubview(formScroll)
+        contentView.addSubview(logScroll)
+        contentView.addSubview(footer)
+
+        let clip = formScroll.contentView
         NSLayoutConstraint.activate([
-            stack.topAnchor.constraint(equalTo: contentView.topAnchor),
-            stack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
-            stack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor),
-            logScroll.heightAnchor.constraint(equalToConstant: 200),
-            logScroll.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
-            footer.widthAnchor.constraint(equalTo: stack.widthAnchor, constant: -40),
+            // The document is as wide as the clip view, so the form lays out
+            // horizontally and scrolls only vertically.
+            questions.topAnchor.constraint(equalTo: clip.topAnchor),
+            questions.leadingAnchor.constraint(equalTo: clip.leadingAnchor),
+            questions.trailingAnchor.constraint(equalTo: clip.trailingAnchor),
+
+            formScroll.topAnchor.constraint(equalTo: contentView.topAnchor),
+            formScroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor),
+            formScroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor),
+            formScroll.bottomAnchor.constraint(equalTo: logScroll.topAnchor, constant: -12),
+
+            logScroll.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            logScroll.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            logScroll.heightAnchor.constraint(equalToConstant: 160),
+            logScroll.bottomAnchor.constraint(equalTo: footer.topAnchor, constant: -12),
+
+            footer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 20),
+            footer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -20),
+            footer.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -20),
         ])
+
+        // The questions must not be squeezed to make room; the scroll view is
+        // what gives when the window is short.
+        formScroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
         credentialModeChanged()
     }
