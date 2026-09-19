@@ -270,6 +270,44 @@ func (s Settings) Port() int32 {
 // here.
 const MaxTcpPorts = 10
 
+// AlignAddressesToVpnCidr moves the tunnel addresses into the tunnel subnet
+// when they are not already in it.
+//
+// The subnet is a choice — a second profile needs one that does not overlap
+// the first — and the two addresses in it are not: the gateway takes the
+// first usable address and this machine the second. Leaving them behind when
+// the subnet changes produced the one error nobody could act on, because the
+// window that suggested 10.110.0.0/24 was also the one refusing 10.100.0.1
+// for being outside it.
+//
+// An address already inside the subnet is left alone, deliberately: the
+// second Mac on a deployment is given .3 by hand, and this must not drag it
+// back to .2 and collide with the first.
+func (s *Settings) AlignAddressesToVpnCidr() {
+	_, subnet, err := net.ParseCIDR(s.VpnCidr)
+	if err != nil {
+		return
+	}
+
+	base := subnet.IP.To4()
+	if base == nil {
+		return
+	}
+	nth := func(offset byte) string {
+		address := make(net.IP, len(base))
+		copy(address, base)
+		address[3] += offset
+		return address.String()
+	}
+
+	if parsed := net.ParseIP(s.GatewayAddress); parsed == nil || !subnet.Contains(parsed) {
+		s.GatewayAddress = nth(1)
+	}
+	if parsed := net.ParseIP(s.ClientAddress); parsed == nil || !subnet.Contains(parsed) {
+		s.ClientAddress = nth(2)
+	}
+}
+
 // --- validation ------------------------------------------------------------
 
 var (

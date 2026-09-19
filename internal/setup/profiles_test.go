@@ -121,3 +121,36 @@ func TestProfilesWithOverlappingTunnelSubnetsAreRefused(t *testing.T) {
 		t.Errorf("a profile with its own tunnel subnet was refused: %v", err)
 	}
 }
+
+// Choosing a tunnel subnet for a second profile must not then be refused for
+// two addresses the user never typed. The subnet is the choice; the gateway
+// takes its first usable address and this machine the second.
+func TestTunnelAddressesFollowTheSubnet(t *testing.T) {
+	s := valid()
+	s.VpnCidr = "10.110.0.0/24"
+	s.GatewayAddress = "10.100.0.1"
+	s.ClientAddress = "10.100.0.2"
+
+	s.AlignAddressesToVpnCidr()
+
+	if s.GatewayAddress != "10.110.0.1" || s.ClientAddress != "10.110.0.2" {
+		t.Fatalf("the addresses stayed at %s and %s", s.GatewayAddress, s.ClientAddress)
+	}
+	if err := s.Validate(); err != nil {
+		t.Errorf("a profile with a subnet of its own was still refused: %v", err)
+	}
+}
+
+// A second Mac on one deployment is given .3 by hand. Dragging it back to .2
+// would collide with the first machine, which is the bug this avoids.
+func TestAnAddressInsideTheSubnetIsLeftAlone(t *testing.T) {
+	s := valid()
+	s.VpnCidr = "10.100.0.0/24"
+	s.ClientAddress = "10.100.0.3"
+
+	s.AlignAddressesToVpnCidr()
+
+	if s.ClientAddress != "10.100.0.3" {
+		t.Errorf("a deliberate address was moved to %s", s.ClientAddress)
+	}
+}

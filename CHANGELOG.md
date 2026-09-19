@@ -7,6 +7,18 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.2
+
+- Fixed: creating a second VPN profile failed with "the tunnel address of the
+  gateway is outside the tunnel subnet". The window suggested a subnet of its
+  own for the new profile and then refused two addresses you never typed. The
+  addresses follow the subnet now — the gateway takes its first usable
+  address, this machine the second — and an address deliberately set inside
+  the subnet, as a second Mac on one deployment has, is left alone.
+- Setup has a **Save** button. It records the profile without deploying
+  anything, which is what adjusting a port wants; the stack is untouched
+  until Deploy CloudFormation.
+
 ## 1.4.1
 
 - With more than one VPN profile, each gets its own submenu holding its

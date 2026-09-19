@@ -49,6 +49,7 @@ final class SetupWindowController: NSWindowController {
     private let logView = NSTextView()
     private let logScroll = NSScrollView()
     private let progress = NSProgressIndicator()
+    private let saveButton = NSPushButton(title: "Save", target: nil, action: nil)
     private let installButton = NSPushButton(title: "Deploy CloudFormation", target: nil, action: nil)
 
     /// Held so the log can be folded away to nothing rather than merely
@@ -231,7 +232,10 @@ final class SetupWindowController: NSWindowController {
         installButton.action = #selector(startInstall)
         installButton.keyEquivalent = "\r"
 
-        let footer = NSStackView(views: [progress, statusLabel, NSView(), installButton])
+        saveButton.target = self
+        saveButton.action = #selector(saveProfile)
+
+        let footer = NSStackView(views: [progress, statusLabel, NSView(), saveButton, installButton])
         footer.orientation = .horizontal
         footer.spacing = 8
         footer.translatesAutoresizingMaskIntoConstraints = false
@@ -602,6 +606,47 @@ final class SetupWindowController: NSWindowController {
     private func append(_ line: String) {
         logView.string += line + "\n"
         logView.scrollToEndOfDocument(nil)
+    }
+
+    /// Records the form without deploying anything.
+    ///
+    /// Filling this in and having no way to keep it was the complaint: the
+    /// only button built a CloudFormation stack, which is minutes and money
+    /// and not what somebody adjusting a port wants at that moment. What is
+    /// saved is the description of a deployment; the stack is untouched until
+    /// Deploy CloudFormation is pressed.
+    @objc private func saveProfile() {
+        guard !isRunning else { return }
+
+        let name = trimmed(vpnProfileField, or: "default")
+        var arguments = [
+            "profile", "save",
+            "--vpn-profile", name,
+            "--port", trimmed(portField, or: "3000"),
+            "--tcp-ports", tcpPortsField.stringValue,
+            "--health-path", trimmed(healthPathField, or: "/hc"),
+            "--vpn-cidr", trimmed(vpnCidrField, or: "10.100.0.0/24"),
+            "--idle-timeout", trimmed(idleTimeoutField, or: "0"),
+            "--domain", trimmed(domainField, or: ""),
+            "--supervise=\(superviseCheckbox.state == .on)",
+        ]
+        if !trimmed(stackField, or: "").isEmpty {
+            arguments += ["--stack", stackField.stringValue]
+        }
+        if !selectedRegion.isEmpty {
+            arguments += ["--region", selectedRegion]
+        }
+        if credentialMode.indexOfSelectedItem == 0 {
+            arguments += ["--profile", profileField.titleOfSelectedItem ?? "default"]
+        }
+
+        let written = runBinary(arguments).trimmingCharacters(in: .whitespacesAndNewlines)
+        if written.isEmpty {
+            statusLabel.stringValue = "Could not save \(name)"
+            return
+        }
+        statusLabel.stringValue = "Saved \(name)"
+        loadVpnProfiles(select: name)
     }
 
     @objc private func startInstall() {

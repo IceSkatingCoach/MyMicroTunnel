@@ -249,6 +249,11 @@ func runInstall(args []string) {
 	}
 	settings.Username = setup.CurrentUsername()
 
+	// The tunnel addresses follow the tunnel subnet. Done before validation,
+	// because otherwise choosing a subnet for a second profile fails on two
+	// addresses the user never typed.
+	settings.AlignAddressesToVpnCidr()
+
 	// A second profile cannot share the first one's interface: both would
 	// write /etc/wireguard/wg0.conf and the second install would take the
 	// first deployment down without saying so.
@@ -903,6 +908,9 @@ func runProfile(args []string) {
 				name, s.InterfaceName, s.ClientAddress, state, s.StackName)
 		}
 
+	case "save":
+		runProfileSave(flags.Args()[1:])
+
 	case "show":
 		if flags.NArg() < 2 {
 			ui.Fail("Usage: mymicrotunnel profile show NAME")
@@ -927,8 +935,87 @@ func runProfile(args []string) {
 		fmt.Printf("supervised     %t\n", s.Supervise)
 
 	default:
-		ui.Fail("Unknown profile command %q. Use list or show.", action)
+		ui.Fail("Unknown profile command %q. Use list, show or save.", action)
 	}
+}
+
+// runProfileSave records what the setup window is holding, without deploying
+// anything.
+//
+// Filling a form and having no way to keep it is the complaint this answers:
+// the only button deployed a CloudFormation stack, which is minutes and money
+// and not what somebody adjusting a port wants at that moment. What is saved
+// is the description of a deployment, not a deployment — the stack is
+// unchanged until it is deployed, and the saved profile says so by having no
+// endpoint yet.
+func runProfileSave(args []string) {
+	flags := flag.NewFlagSet("profile save", flag.ExitOnError)
+	defaults := setup.Defaults()
+	vpnProfile := flags.String("vpn-profile", defaults.ProfileName, "which deployment on this machine")
+	awsProfile := flags.String("profile", "", "AWS profile")
+	region := flags.String("region", "", "AWS region")
+	stackName := flags.String("stack", "", "CloudFormation stack name")
+	domainName := flags.String("domain", "", "public hostname")
+	servicePort := flags.String("port", "", "local[:published] port for the service")
+	tcpPorts := flags.String("tcp-ports", "", "further ports, each local[:published]")
+	healthPath := flags.String("health-path", "", "load balancer health check path")
+	vpnCidr := flags.String("vpn-cidr", "", "tunnel subnet")
+	idleTimeout := flags.Int("idle-timeout", -1, "minutes of silence before the gateway sleeps")
+	supervise := flags.Bool("supervise", false, "reconnect this profile at login")
+
+	_ = flags.Parse(args)
+
+	typed := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { typed[f.Name] = true })
+
+	// Started from what is already recorded, so saving one field does not
+	// erase the rest.
+	settings, err := setup.LoadProfileSettings(*vpnProfile)
+	if err != nil {
+		settings = defaults
+		settings.ProfileName = *vpnProfile
+	}
+
+	applyString(typed, "profile", awsProfile, &settings.Profile)
+	applyString(typed, "region", region, &settings.Region)
+	applyString(typed, "stack", stackName, &settings.StackName)
+	applyString(typed, "domain", domainName, &settings.DomainName)
+	applyString(typed, "health-path", healthPath, &settings.HealthCheckPath)
+	applyString(typed, "vpn-cidr", vpnCidr, &settings.VpnCidr)
+
+	if typed["port"] {
+		mapping, err := setup.ParsePortMapping(*servicePort)
+		if err != nil {
+			ui.Fail("%v", err)
+		}
+		settings.ServicePort = strconv.Itoa(int(mapping.Local))
+		settings.PublishedPort = strconv.Itoa(int(mapping.Published))
+	}
+	if typed["tcp-ports"] {
+		mappings, err := setup.ParsePortMappings(*tcpPorts)
+		if err != nil {
+			ui.Fail("%v", err)
+		}
+		settings.TcpPorts = nil
+		for _, mapping := range mappings {
+			settings.TcpPorts = append(settings.TcpPorts, mapping.String())
+		}
+	}
+	if typed["idle-timeout"] && *idleTimeout >= 0 {
+		settings.IdleTimeoutMinutes = *idleTimeout
+	}
+	if typed["supervise"] {
+		settings.Supervise = *supervise
+	}
+	if settings.ProfileName == "" {
+		settings.ProfileName = *vpnProfile
+	}
+	settings.AlignAddressesToVpnCidr()
+
+	if err := setup.SaveProfileSettings(settings); err != nil {
+		ui.Fail("Could not save the profile: %v", err)
+	}
+	fmt.Println(setup.ProfileSettingsPath(settings.ProfileName))
 }
 
 // runWake brings a gateway back that switched itself off on its idle timeout.
