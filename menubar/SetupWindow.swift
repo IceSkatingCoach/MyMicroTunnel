@@ -54,6 +54,17 @@ final class SetupWindowController: NSWindowController {
     private var isRunning = false
     private let settingsPath = NSTemporaryDirectory() + "microtunnel-setup.json"
 
+    /// Where a person with no AWS identity for this starts. The console link
+    /// creates the two IAM users this product uses — the one that installs,
+    /// and the narrower one the app runs as afterwards — in whichever account
+    /// they are signed into.
+    private static let deployIdentityURL = URL(string:
+        "https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review"
+        + "?templateURL=https%3A%2F%2Fmymicrotunnel-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml"
+        + "&stackName=mymicrotunnel-deploy-role")!
+
+    private static let guideURL = URL(string: "https://mymicrotunnel.maragato.ca/#install")!
+
     /// Title of the picker entry that means "not one of the installed ones".
     private static let newProfileTitle = "New VPN Profile…"
 
@@ -145,6 +156,16 @@ final class SetupWindowController: NSWindowController {
         vpnCidrField.stringValue = defaults.vpnCidr
         idleTimeoutField.stringValue = defaults.idleTimeout
         alarmEmailField.placeholderString = "optional"
+
+        // Shown only when nothing is deployed. Somebody re-running setup for
+        // an existing profile knows all of this, and a wall of instructions
+        // above the form they came to edit is in the way.
+        if Tunnel.installed().isEmpty {
+            form.addArrangedSubview(sectionLabel("First time here"))
+            form.addArrangedSubview(firstRunNote())
+            form.addArrangedSubview(firstRunButtons())
+            form.addArrangedSubview(spacer())
+        }
 
         form.addArrangedSubview(sectionLabel("AWS credentials"))
         form.addArrangedSubview(credentialMode)
@@ -254,6 +275,47 @@ final class SetupWindowController: NSWindowController {
         formScroll.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
 
         credentialModeChanged()
+    }
+
+    private func firstRunNote() -> NSTextField {
+        let note = NSTextField(wrappingLabelWithString: """
+            1.  Create the AWS identity this installs with. The button below opens             CloudFormation in your own account and creates two IAM users: one that             installs, and a narrower one the app runs as afterwards. Then open that             user in IAM, create an access key, and paste the two values below — or             pick an AWS profile you already have.
+
+            2.  You need a public Route53 hosted zone for the domain you will serve             from: example.com if the hostname will be updates.example.com. This never             creates or deletes a zone. The hostname needs three labels, and it is             repointed rather than refused if it already exists.
+
+            3.  Fill in the form. Region is a list, and the stack name fills itself in             from your account and region once both are known.
+
+            4.  Press Install. macOS asks for your password once, for the tunnel             configuration, the private key and the narrow sudoers rule that lets the             menu bar switch the tunnel without asking again.
+
+            5.  It finishes by proving the path: tunnel up, gateway answers, load             balancer healthy, hostname returns 200. If a step fails it says which.
+
+            The credentials you type are used once, to mint the app's own key, which             is kept in your login Keychain. Roughly USD 26/month of AWS, in your             account, and the switch in the menu bar decides whether the world can             reach you.
+            """)
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        note.translatesAutoresizingMaskIntoConstraints = false
+        note.widthAnchor.constraint(equalToConstant: 570).isActive = true
+        return note
+    }
+
+    private func firstRunButtons() -> NSStackView {
+        let create = NSPushButton(title: "Create the deploy identity", target: self,
+                                  action: #selector(openDeployIdentity))
+        let guide = NSPushButton(title: "Open the guide", target: self,
+                                 action: #selector(openGuide))
+
+        let row = NSStackView(views: [create, guide])
+        row.orientation = .horizontal
+        row.spacing = 10
+        return row
+    }
+
+    @objc private func openDeployIdentity() {
+        NSWorkspace.shared.open(Self.deployIdentityURL)
+    }
+
+    @objc private func openGuide() {
+        NSWorkspace.shared.open(Self.guideURL)
     }
 
     private func sectionLabel(_ text: String) -> NSTextField {
