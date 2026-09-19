@@ -189,6 +189,7 @@ final class SetupWindowController: NSWindowController {
         form.addArrangedSubview(labelled("Public hostname", domainField))
         form.addArrangedSubview(labelled("Service port", portField))
         form.addArrangedSubview(labelled("Also publish", tcpPortsField))
+        form.addArrangedSubview(labelled("", portHint()))
         form.addArrangedSubview(labelled("Health check path", healthPathField))
         form.addArrangedSubview(labelled("Tunnel subnet", vpnCidrField))
         form.addArrangedSubview(labelled("Idle timeout (min)", idleTimeoutField))
@@ -326,6 +327,20 @@ final class SetupWindowController: NSWindowController {
 
     @objc private func openGuide() {
         NSWorkspace.shared.open(Self.guideURL)
+    }
+
+    /// Says what a port field takes, next to the port fields.
+    ///
+    /// The placeholders showed the syntax and not the meaning, and "3000:8080"
+    /// is ambiguous until somebody tells you which end is which — the two
+    /// readings differ by whether your service moves or the hostname does.
+    private func portHint() -> NSTextField {
+        let hint = NSTextField(wrappingLabelWithString: """
+            Ports are written local:published — the port here first, the port the             hostname answers on second. 5432 publishes 5432 under its own name.             3000:8080 reaches port 3000 on this Mac and answers as 8080 on the hostname.             The service above follows the same rule: 3000 is HTTPS on 443, and 3000:8443             publishes it on 8443 instead.
+            """)
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .secondaryLabelColor
+        return hint
     }
 
     private func logHeightConstraint() -> NSLayoutConstraint {
