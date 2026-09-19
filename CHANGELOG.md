@@ -7,6 +7,15 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.1
+
+- With more than one VPN profile, each gets its own submenu holding its
+  Connect, Test tunnel, Open health check and Reconnect at login. The top
+  level now reads as a list of deployments and their state — ticked when
+  connected — instead of a column of identical verbs where the wrong one
+  moves somebody else's tunnel. A single profile stays flat: a submenu there
+  is a second click for nothing.
+
 ## 1.4.0
 
 - Updating now actually replaces what is running. An update swaps the files

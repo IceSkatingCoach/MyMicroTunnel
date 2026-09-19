@@ -361,14 +361,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(disabledItem("  none yet — Setup… creates the first"))
         }
 
-        // Every profile is named, even when there is only one. A machine that
-        // holds two needs to say which switch is which, and a machine that
-        // holds one should look the same as that machine will after the
-        // second is added — otherwise the list appears out of nowhere.
-        for profile in profiles {
-            menu.addItem(.separator())
-            addItems(for: profile, to: menu)
-        }
+        menu.addItem(.separator())
+        addProfiles(to: menu)
 
         menu.addItem(.separator())
 
@@ -410,84 +404,121 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     /// One profile's block of the menu.
-    private func addItems(for profile: Tunnel, to menu: NSMenu) {
-        menu.addItem(disabledItem(profile.profileName))
+    /// One line per profile, carrying its state, with everything that acts on
+    /// that profile in a submenu beneath it.
+    ///
+    /// Flat until there are two. With one deployment the submenu is a second
+    /// click for no information — there is nothing to tell it apart from —
+    /// and with several, a flat menu is a list of identical verbs where
+    /// choosing the wrong one moves somebody else's tunnel.
+    private func addProfiles(to menu: NSMenu) {
+        let nested = profiles.count > 1
 
-        let state: String
-        if isBusy(profile) {
-            state = "Working…"
-        } else if isConnected(profile) {
-            state = "Connected — \(profile.clientAddress)"
-        } else {
-            state = "Disconnected"
+        for profile in profiles {
+            if !nested {
+                menu.addItem(disabledItem(profile.profileName))
+                menu.addItem(disabledItem("  " + state(of: profile)))
+                addNotes(for: profile, to: menu)
+                for item in actions(for: profile, shortcuts: true) {
+                    menu.addItem(item)
+                }
+                continue
+            }
+
+            let header = NSMenuItem(
+                title: "\(profile.profileName) — \(state(of: profile))",
+                action: nil, keyEquivalent: "")
+            // A tick on the profiles that are up, so the whole machine's state
+            // is readable without opening anything.
+            header.state = isConnected(profile) ? .on : .off
+
+            let submenu = NSMenu()
+            addNotes(for: profile, to: submenu)
+            for item in actions(for: profile, shortcuts: false) {
+                submenu.addItem(item)
+            }
+            header.submenu = submenu
+            menu.addItem(header)
         }
-        menu.addItem(disabledItem("  " + state))
+    }
 
+    private func state(of profile: Tunnel) -> String {
+        if isBusy(profile) {
+            return "Working…"
+        }
+        if isConnected(profile) {
+            return "Connected — \(profile.clientAddress)"
+        }
+        return "Disconnected"
+    }
+
+    /// What is worth knowing about a profile but cannot be acted on.
+    private func addNotes(for profile: Tunnel, to menu: NSMenu) {
         if let error = lastError[profile.profileName] {
             menu.addItem(disabledItem("Last error:"))
             for line in error.split(separator: "\n").prefix(4) {
                 menu.addItem(disabledItem("  \(line)"))
             }
         }
-
         if profile.idleTimeoutMinutes > 0 {
-            menu.addItem(disabledItem("  Gateway sleeps after \(profile.idleTimeoutMinutes) idle minutes"))
+            menu.addItem(disabledItem("Gateway sleeps after \(profile.idleTimeoutMinutes) idle minutes"))
         }
         if !profile.tcpPorts.isEmpty {
-            menu.addItem(disabledItem("  Also published: TCP \(profile.tcpPorts.joined(separator: ", "))"))
+            menu.addItem(disabledItem("Also published: TCP \(profile.tcpPorts.joined(separator: ", "))"))
         }
+        if menu.numberOfItems > 0 {
+            menu.addItem(.separator())
+        }
+    }
 
-        // The key equivalents belong to the first profile only. Two menu items
-        // sharing one shortcut means the shortcut picks one of them at random,
-        // which for a Connect item is the wrong tunnel.
-        let first = profile.profileName == profiles.first?.profileName
+    /// Everything that acts on one profile. Every item carries the profile's
+    /// name, so an action can never reach the wrong tunnel.
+    ///
+    /// Shortcuts only in the flat layout: two items sharing one key
+    /// equivalent means the key picks one of them at random, and for Connect
+    /// that is somebody else's deployment.
+    private func actions(for profile: Tunnel, shortcuts: Bool) -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
 
         let toggle = NSMenuItem(
             title: isConnected(profile) ? "Disconnect" : "Connect",
             action: #selector(toggleTunnel(_:)),
-            keyEquivalent: first ? "c" : ""
-        )
-        toggle.target = self
+            keyEquivalent: shortcuts ? "c" : "")
         toggle.isEnabled = !isBusy(profile)
-        toggle.representedObject = profile.profileName
-        menu.addItem(toggle)
-
-        // Which profiles come back on their own, and which wait to be asked.
-        // A checkmark rather than two menu items, because it is one decision
-        // with two states and the current one is worth seeing at a glance.
-        let reconnect = NSMenuItem(title: "Reconnect at login", action: #selector(toggleReconnect(_:)),
-                                   keyEquivalent: "")
-        reconnect.target = self
-        reconnect.state = profile.supervised ? .on : .off
-        reconnect.isEnabled = !isBusy(profile)
-        reconnect.representedObject = profile.profileName
-        menu.addItem(reconnect)
+        items.append(toggle)
 
         let test = NSMenuItem(title: "Test tunnel", action: #selector(testTunnel(_:)),
-                              keyEquivalent: first ? "t" : "")
-        test.target = self
+                              keyEquivalent: shortcuts ? "t" : "")
         test.isEnabled = isConnected(profile) && !isBusy(profile)
-        test.representedObject = profile.profileName
-        menu.addItem(test)
+        items.append(test)
 
-        // Only for a deployment that can actually be asleep. On one that is
-        // always running this would be a button that does nothing.
+        let open = NSMenuItem(title: "Open health check", action: #selector(openHealthCheck(_:)),
+                              keyEquivalent: shortcuts ? "h" : "")
+        // Nothing deployed yet means no hostname to open.
+        open.isEnabled = profile.healthCheckURL != nil
+        items.append(open)
+
+        // Only for a deployment that can actually be asleep; on one that is
+        // always running this is a button that does nothing.
         if profile.idleTimeoutMinutes > 0 {
             let wake = NSMenuItem(title: "Wake gateway", action: #selector(wakeGateway(_:)),
                                   keyEquivalent: "")
-            wake.target = self
             wake.isEnabled = !isBusy(profile)
-            wake.representedObject = profile.profileName
-            menu.addItem(wake)
+            items.append(wake)
         }
 
-        let open = NSMenuItem(title: "Open health check", action: #selector(openHealthCheck(_:)),
-                              keyEquivalent: first ? "h" : "")
-        open.target = self
-        // Nothing has been deployed yet, so there is no hostname to open.
-        open.isEnabled = profile.healthCheckURL != nil
-        open.representedObject = profile.profileName
-        menu.addItem(open)
+        // One decision with two states, so a checkmark rather than two items.
+        let reconnect = NSMenuItem(title: "Reconnect at login", action: #selector(toggleReconnect(_:)),
+                                   keyEquivalent: "")
+        reconnect.state = profile.supervised ? .on : .off
+        reconnect.isEnabled = !isBusy(profile)
+        items.append(reconnect)
+
+        for item in items {
+            item.target = self
+            item.representedObject = profile.profileName
+        }
+        return items
     }
 
     private func disabledItem(_ title: String) -> NSMenuItem {
