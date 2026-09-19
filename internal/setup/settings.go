@@ -129,6 +129,16 @@ type Settings struct {
 	// state the menu bar last asked for, across reboots and sleep.
 	Supervise bool `json:"supervise"`
 
+	// StagedKeyPath is where the unprivileged stage left the newly generated
+	// private key for the privileged one to install.
+	//
+	// Carried in the settings rather than recomputed, because the two stages
+	// do not agree about os.TempDir(): sudo gives root its own TMPDIR, so the
+	// root stage looked in a directory the key was never written to, wrote a
+	// config naming a key that did not exist, and left a tunnel that comes up
+	// and cannot load a private key.
+	StagedKeyPath string `json:"stagedKeyPath,omitempty"`
+
 	// Username owns the sudoers rule. Captured in the unprivileged stage,
 	// because the privileged one may not be able to work it out.
 	Username string `json:"username"`

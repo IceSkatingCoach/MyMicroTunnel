@@ -54,7 +54,7 @@ func Prerequisites(interactive bool) string {
 // The key belongs to the profile rather than to the machine: two profiles are
 // two deployments, and one shared identity would let either of them revoke the
 // other's tunnel.
-func EnsureClientKey(s Settings, interactive bool) string {
+func EnsureClientKey(s *Settings, interactive bool) string {
 	ui.Step("WireGuard client key for %s", s.ProfileName)
 
 	keyPath := s.ClientKeyPath()
@@ -92,6 +92,9 @@ func EnsureClientKey(s Settings, interactive bool) string {
 	if err := os.WriteFile(stagedKeyPath(s.ProfileName), []byte(private+"\n"), 0o600); err != nil {
 		ui.Fail("Could not stage the client key: %v", err)
 	}
+	// Recorded for the privileged stage, which cannot work the path out for
+	// itself: under sudo it has a different TMPDIR.
+	s.StagedKeyPath = stagedKeyPath(s.ProfileName)
 	ui.Done("Key generated")
 
 	public, err := tunnel.PublicKey(private)
@@ -414,7 +417,10 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 		return err
 	}
 
-	staged := stagedKeyPath(s.ProfileName)
+	staged := s.StagedKeyPath
+	if staged == "" {
+		staged = stagedKeyPath(s.ProfileName)
+	}
 	keyPath := s.ClientKeyPath()
 	writes := []struct {
 		content string

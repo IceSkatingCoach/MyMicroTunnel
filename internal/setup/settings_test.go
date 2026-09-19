@@ -290,3 +290,27 @@ func TestValidateRequiresAHostPartInTheHostname(t *testing.T) {
 		}
 	}
 }
+
+// The two stages are two processes, and under sudo they do not even agree
+// about os.TempDir(): root gets its own. A staged key path that each of them
+// computes for itself therefore points at different directories, and the
+// privileged stage writes a tunnel config naming a key it never installed —
+// a tunnel that comes up and cannot load a private key. The path travels in
+// the settings for that reason, and it has to survive the round trip.
+func TestTheStagedKeyPathSurvivesBetweenStages(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+
+	s := valid()
+	s.StagedKeyPath = "/var/folders/yl/whatever/T/mymicrotunnel-staging/default/client.key"
+	if err := s.Write(path); err != nil {
+		t.Fatalf("writing: %v", err)
+	}
+
+	read, err := ReadSettings(path)
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+	if read.StagedKeyPath != s.StagedKeyPath {
+		t.Errorf("the privileged stage would look in %q instead of %q", read.StagedKeyPath, s.StagedKeyPath)
+	}
+}

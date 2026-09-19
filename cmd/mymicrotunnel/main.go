@@ -299,7 +299,7 @@ func runInstall(args []string) {
 
 		clientPublicKey := *clientPublicKeyFlag
 		if clientPublicKey == "" {
-			clientPublicKey = setup.EnsureClientKey(settings, interactive)
+			clientPublicKey = setup.EnsureClientKey(&settings, interactive)
 		} else {
 			ui.Step("WireGuard client key")
 			ui.Done("Using the key supplied on the command line")
