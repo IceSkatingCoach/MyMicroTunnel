@@ -7,6 +7,18 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.4
+
+- Every VPN profile now has its own submenu holding Connect, Test tunnel,
+  Open health check and — where the gateway sleeps — Wake gateway. Always a
+  submenu, including with one profile, so the menu does not rearrange itself
+  when a second appears.
+- A profile that has been saved but never deployed is listed too, as "Not
+  deployed", instead of being left out. Being invisible read as the save
+  having been lost.
+- Reconnect at login is no longer in the menu. It belongs with the rest of a
+  profile's configuration, in Setup.
+
 ## 1.4.3
 
 - Fixed: Save on a new VPN profile appeared to do nothing and cleared the
