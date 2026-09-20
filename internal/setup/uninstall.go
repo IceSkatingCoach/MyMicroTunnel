@@ -16,8 +16,17 @@ type UninstallOptions struct {
 	// the file is rewritten from whatever is left.
 	ProfileName string
 
-	DeleteStack    bool
-	DeleteKeys     bool
+	DeleteStack bool
+	DeleteKeys  bool
+
+	// KeepApp removes one profile and leaves the application in place.
+	//
+	// Deleting a profile and deleting this product are different requests,
+	// and the menu offers both. Without this, removing the last profile took
+	// the app, the login item and the stored AWS credentials with it —
+	// which is right for an uninstall and startling for somebody tidying up
+	// one deployment.
+	KeepApp        bool
 	StackName      string
 	Profile        string
 	Region         string
@@ -62,13 +71,13 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 	// request routed to it a timeout.
 	withdrawFromDeployment(ctx, options, config)
 
-	if len(remaining) == 0 {
+	if len(remaining) == 0 && !options.KeepApp {
 		sys.Run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
 		sys.Run("osascript", "-e",
 			`tell application "System Events" to delete (every login item whose name is "MyMicroTunnel")`)
 		os.RemoveAll(InstalledAppPath)
 		ui.Done("App and login item removed")
-	} else {
+	} else if len(remaining) > 0 {
 		ui.Info("Keeping the app: %d other profile(s) still use it", len(remaining))
 	}
 
@@ -78,7 +87,7 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 
 	os.RemoveAll(ProfileDir(options.ProfileName))
 	ui.Done("Profile %s removed", options.ProfileName)
-	if len(remaining) == 0 {
+	if len(remaining) == 0 && !options.KeepApp {
 		os.RemoveAll(AppConfigDir())
 		ui.Done("App configuration removed")
 

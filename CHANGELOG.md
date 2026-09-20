@@ -7,6 +7,18 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.9
+
+- Each VPN profile's submenu has **Delete profile…**. It asks twice — once
+  to confirm which profile, once to spell out that the AWS stack, the load
+  balancer, the certificate, the address and the DNS record go with it — and
+  then removes the deployment, the tunnel, the key, the sudoers entry and the
+  local record. The app stays; deleting a profile is not uninstalling the
+  product, even when it is the last one.
+- The background service no longer repeats "no such file" every fifteen
+  seconds for a profile whose configuration is not there yet. It says so
+  once and waits for the configuration to appear.
+
 ## 1.4.8
 
 - Fixed: two saved-but-undeployed profiles were handed the same WireGuard

@@ -612,7 +612,8 @@ func runUninstall(args []string) {
 	flags := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	asJSON := flags.Bool("json", false, "emit NDJSON events")
 	deleteStack := flags.Bool("delete-stack", false, "also delete the CloudFormation stack")
-	deleteKeys := flags.Bool("delete-keys", false, "also delete /etc/wireguard")
+	deleteKeys := flags.Bool("delete-keys", false, "also delete this profile's key and tunnel configuration")
+	keepApp := flags.Bool("keep-app", false, "remove the profile but leave the app installed")
 	nonInteractive := flags.Bool("non-interactive", false, "never prompt")
 
 	defaults := setup.Defaults()
@@ -637,6 +638,7 @@ func runUninstall(args []string) {
 
 	options := setup.UninstallOptions{
 		ProfileName:    *vpnProfile,
+		KeepApp:        *keepApp,
 		DeleteStack:    *deleteStack,
 		DeleteKeys:     *deleteKeys,
 		StackName:      resolvedStack,

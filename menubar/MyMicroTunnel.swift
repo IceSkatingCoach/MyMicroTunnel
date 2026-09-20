@@ -488,6 +488,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.representedObject = profile.profileName
             menu.addItem(item)
         }
+
+        menu.addItem(.separator())
+        let delete = NSMenuItem(title: "Delete profile…", action: #selector(deleteProfile(_:)),
+                                keyEquivalent: "")
+        delete.target = self
+        delete.isEnabled = !isBusy(profile)
+        delete.representedObject = profile.profileName
+        menu.addItem(delete)
+
         return menu
     }
 
@@ -629,6 +638,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 } else {
                     self.lastError[profile.profileName] = result.output
                     self.report(title: "Could not wake the gateway", message: result.output)
+                }
+            }
+        }
+    }
+
+    /// Removes one deployment: its AWS stack, its tunnel, its key, its
+    /// sudoers line and its record on this Mac.
+    ///
+    /// Asked twice, and the two questions are different. The first is "did
+    /// you mean this profile", answerable by reading the name; the second is
+    /// "do you understand what goes", which lists what cannot be brought
+    /// back. A single dialog collapses those into one skim, and this is the
+    /// action people perform at the end of a long evening.
+    @objc private func deleteProfile(_ sender: Any?) {
+        guard let profile = profile(for: sender) else { return }
+
+        let first = NSAlert()
+        first.messageText = "Delete the VPN profile \(profile.profileName)?"
+        first.informativeText = """
+            This removes the deployment from this Mac: its tunnel, its private key, \
+            its permission to move the tunnel without a password, and its entry in \
+            the menu.
+            """
+        first.alertStyle = .warning
+        first.addButton(withTitle: "Continue")
+        first.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        guard first.runModal() == .alertFirstButtonReturn else { return }
+
+        let second = NSAlert()
+        second.messageText = "Also delete the AWS deployment for \(profile.profileName)?"
+        second.informativeText = """
+            The CloudFormation stack goes with it: the load balancer, the gateway, the \
+            certificate, the Elastic IP and the DNS record. \(profile.serviceUrl) stops \
+            answering, for every Mac registered to it, not only this one.
+
+            This cannot be undone. Deploying again builds a new stack with a new address.
+            """
+        second.alertStyle = .critical
+        second.addButton(withTitle: "Delete \(profile.profileName) and its stack")
+        second.addButton(withTitle: "Cancel")
+        guard second.runModal() == .alertFirstButtonReturn else { return }
+
+        busy.insert(profile.profileName)
+        updateStatusItemImage()
+
+        // Through the helper as root: the sudoers rule, the tunnel
+        // configuration and the private key are all root-owned. --keep-app
+        // because deleting a profile is not uninstalling the product, even
+        // when it is the last one.
+        let command = "\(shellQuote(profile.helperPath)) uninstall --non-interactive"
+            + " --vpn-profile \(shellQuote(profile.profileName))"
+            + " --delete-stack --delete-keys --keep-app"
+        let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
+
+        Task.detached(priority: .userInitiated) {
+            let result = run("/usr/bin/osascript", ["-e", script])
+            await MainActor.run {
+                self.busy.remove(profile.profileName)
+                self.refreshState()
+                if result.succeeded {
+                    self.report(title: "\(profile.profileName) deleted",
+                                message: "Its stack, tunnel and configuration are gone.")
+                } else {
+                    self.report(title: "Could not delete \(profile.profileName)",
+                                message: result.output.isEmpty
+                                    ? "The privileged step did not run."
+                                    : result.output)
                 }
             }
         }

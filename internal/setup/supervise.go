@@ -150,9 +150,28 @@ func superviseTargets(options SuperviseOptions) []superviseTarget {
 	return targets
 }
 
+// missingConfigLogged keeps the daemon from repeating itself. The condition
+// is not transient — a configuration appears when somebody deploys, not on
+// its own — so saying it once per occurrence is saying it enough.
+var missingConfigLogged = map[string]bool{}
+
 func reconcileTunnel(target superviseTarget) {
 	wanted := desiredUp(target.statePath)
 	running := tunnel.IsUp(target.interfaceName)
+
+	// A profile whose configuration is not there cannot be raised, and
+	// trying every fifteen seconds fills the log with one line that never
+	// changes. It happens between deploying a profile and authorising the
+	// privileged step, and after a configuration is removed by hand.
+	if wanted && !sys.Exists(target.configPath) {
+		if !missingConfigLogged[target.profileName] {
+			missingConfigLogged[target.profileName] = true
+			logf("%s has no configuration at %s; deploy it from Setup. Not retrying until it appears.",
+				target.profileName, target.configPath)
+		}
+		return
+	}
+	delete(missingConfigLogged, target.profileName)
 
 	switch {
 	case wanted && !running:
