@@ -7,6 +7,14 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.3
+
+- Fixed: Save on a new VPN profile appeared to do nothing and cleared the
+  form. It had saved: the profile list only showed deployed profiles, so the
+  one just saved was not in it, the selection fell back to "New VPN
+  Profile…", and that resets the fields. Saved profiles are listed now and
+  stay selected.
+
 ## 1.4.2
 
 - Fixed: creating a second VPN profile failed with "the tunnel address of the

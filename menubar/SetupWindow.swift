@@ -168,7 +168,7 @@ final class SetupWindowController: NSWindowController {
         // Shown only when nothing is deployed. Somebody re-running setup for
         // an existing profile knows all of this, and a wall of instructions
         // above the form they came to edit is in the way.
-        if Tunnel.installed().isEmpty {
+        if Tunnel.profileNames().isEmpty {
             form.addArrangedSubview(sectionLabel("First time here"))
             form.addArrangedSubview(firstRunNote())
             form.addArrangedSubview(firstRunButtons())
@@ -417,7 +417,10 @@ final class SetupWindowController: NSWindowController {
     /// otherwise the first installed one, otherwise a new one — which is what
     /// a first run is.
     private func loadVpnProfiles(select wanted: String?) {
-        let installed = Tunnel.installed().map(\.profileName)
+        // Saved drafts included: a profile that has been recorded but not yet
+        // deployed still has to be selectable, or Save looks like it did
+        // nothing.
+        let installed = Tunnel.profileNames()
 
         vpnProfilePicker.removeAllItems()
         vpnProfilePicker.addItems(withTitles: installed)
@@ -445,9 +448,9 @@ final class SetupWindowController: NSWindowController {
             // Suggested, not imposed: a second deployment usually wants its
             // own tunnel subnet as well, and defaulting both together is what
             // stops the install being refused for overlapping the first.
-            let installed = Tunnel.installed()
+            let installed = Tunnel.profileNames()
             if vpnProfileField.stringValue.isEmpty || !installed.isEmpty {
-                vpnProfileField.stringValue = suggestedProfileName(installed.map(\.profileName))
+                vpnProfileField.stringValue = suggestedProfileName(installed)
             }
             if installed.count > 0 {
                 vpnCidrField.stringValue = suggestedVpnCidr(installed.count)

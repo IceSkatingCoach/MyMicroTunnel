@@ -138,6 +138,26 @@ struct Tunnel: Decodable {
         }
     }
 
+    /// Every profile this machine knows about, installed or merely saved.
+    ///
+    /// The menu lists what is installed — a profile with no deployment has no
+    /// tunnel to switch — but setup has to offer the drafts too, or saving
+    /// one and finding it missing from the list is indistinguishable from the
+    /// save having failed. That is exactly how it read.
+    static func profileNames() -> [String] {
+        let contents = (try? FileManager.default.contentsOfDirectory(
+            at: profilesDirectory, includingPropertiesForKeys: nil)) ?? []
+
+        return contents
+            .filter { directory in
+                let files = FileManager.default
+                return files.fileExists(atPath: directory.appendingPathComponent("config.json").path)
+                    || files.fileExists(atPath: directory.appendingPathComponent("settings.json").path)
+            }
+            .map(\.lastPathComponent)
+            .sorted()
+    }
+
     /// Every profile installed on this machine.
     ///
     /// A profile with an unreadable config is skipped rather than replaced with
