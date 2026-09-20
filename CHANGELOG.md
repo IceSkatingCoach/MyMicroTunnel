@@ -7,6 +7,18 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.8
+
+- Fixed: two saved-but-undeployed profiles were handed the same WireGuard
+  interface, because only deployed ones were counted. The second to be
+  installed wrote its tunnel configuration over the first's, producing a
+  tunnel whose address came from one profile and whose gateway came from
+  neither — "the public key of peer :51820 is not a WireGuard key".
+- Removed: the installer no longer adopts a private key left by versions
+  before per-profile keys. It claimed the new profile's key file, which then
+  suppressed the key that had just been registered with the gateway, so the
+  tunnel came up with an identity the gateway had never been told about.
+
 ## 1.4.7
 
 - Fixed: "utun8 is already on 10.0.0.0/8" when deploying a second profile.

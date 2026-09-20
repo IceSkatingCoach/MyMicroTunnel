@@ -87,8 +87,17 @@ func (s Settings) DesiredStatePath() string {
 	return DesiredStatePathFor(s.ProfileName)
 }
 
-// ListProfiles names every profile this machine holds, in a stable order so
-// two runs of `profiles` print the same thing.
+// ListProfiles names every profile this machine holds, deployed or merely
+// saved, in a stable order so two runs print the same thing.
+//
+// Drafts count. They were excluded once, on the grounds that a profile with
+// no deployment is nothing to act on — and then two drafts were both handed
+// wg1, because each was invisible to the other's interface allocation. The
+// second one installed wrote its configuration over the first's, and the
+// tunnel that came up was a mixture of the two.
+//
+// A directory holding neither file is a half-written install and is still
+// skipped.
 func ListProfiles() []string {
 	entries, err := os.ReadDir(ProfilesDir())
 	if err != nil {
@@ -99,9 +108,9 @@ func ListProfiles() []string {
 		if !entry.IsDir() {
 			continue
 		}
-		// A directory with no config is a half-written install, not a profile
-		// anything should act on.
-		if _, err := os.Stat(ProfileConfigPath(entry.Name())); err != nil {
+		_, configErr := os.Stat(ProfileConfigPath(entry.Name()))
+		_, settingsErr := os.Stat(ProfileSettingsPath(entry.Name()))
+		if configErr != nil && settingsErr != nil {
 			continue
 		}
 		names = append(names, entry.Name())

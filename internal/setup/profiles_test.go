@@ -165,3 +165,36 @@ func TestAnAddressInsideTheSubnetIsLeftAlone(t *testing.T) {
 		t.Errorf("a deliberate address was moved to %s", s.ClientAddress)
 	}
 }
+
+// Two saved-but-undeployed profiles must not be handed the same interface.
+//
+// Interface allocation once counted only deployed profiles, so each draft
+// was invisible to the other: both took wg1, and the second one installed
+// wrote /etc/wireguard/wg1.conf over the first's — producing a tunnel whose
+// address came from one profile and whose peer came from neither.
+func TestDraftsAreVisibleToInterfaceAllocation(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+
+	deployed := valid()
+	deployed.ProfileName = "work"
+	deployed.InterfaceName = "wg0"
+	writeProfileForTest(t, deployed)
+
+	// A draft: settings only, no config.json, exactly as Save leaves it.
+	draft := valid()
+	draft.ProfileName = "lab"
+	draft.InterfaceName = "wg1"
+	draft.VpnCidr = "10.110.0.0/24"
+	draft.ClientAddress = "10.110.0.2"
+	draft.StackName = "mymicrotunnel-123456789012-us-east-2-lab"
+	if err := SaveProfileSettings(draft); err != nil {
+		t.Fatal(err)
+	}
+
+	if names := ListProfiles(); len(names) != 2 {
+		t.Fatalf("profiles are %v; a draft is not counted", names)
+	}
+	if free := NextFreeInterface(TakenInterfaces("third")); free != "wg2" {
+		t.Errorf("a third profile was offered %s, which a draft already holds", free)
+	}
+}
