@@ -7,6 +7,16 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.6
+
+- Fixed: installing a second VPN profile was still refused with "profile X
+  already uses the interface wg0". Setup passes a temporary file from one
+  stage of the install to the next, and it used the same path for every
+  profile — so the file left by the profile deployed last was read as the new
+  one's, which then inherited its interface and its endpoint and collided
+  with it. The file is per profile now, and a file describing a different
+  profile is ignored.
+
 ## 1.4.5
 
 - Fixed: a second VPN profile was refused for two things nobody chose. It was

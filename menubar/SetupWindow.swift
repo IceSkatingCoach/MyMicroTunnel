@@ -59,7 +59,15 @@ final class SetupWindowController: NSWindowController {
     private let statusLabel = NSTextField(labelWithString: "")
 
     private var isRunning = false
-    private let settingsPath = NSTemporaryDirectory() + "microtunnel-setup.json"
+    /// Where the deploy stage leaves the settings for the privileged stage.
+    ///
+    /// Per profile: one shared path meant the file describing the profile
+    /// deployed last was read by the install of the next one, which then
+    /// inherited its interface and its endpoint and was refused for
+    /// colliding with it.
+    private var settingsPath: String {
+        NSTemporaryDirectory() + "microtunnel-setup-\(trimmed(vpnProfileField, or: "default")).json"
+    }
 
     /// Where a person with no AWS identity for this starts. The console link
     /// creates the two IAM users this product uses — the one that installs,

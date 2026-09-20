@@ -189,8 +189,18 @@ func runInstall(args []string) {
 		settings = stored
 	}
 	if *settingsPath != "" {
+		// Only when it describes the profile being installed.
+		//
+		// The file carries a deployment from one stage to the next, and the
+		// graphical front end hands it the same path every time. A file left
+		// by an earlier run of a *different* profile therefore won every
+		// field — including the interface and the endpoint — so installing a
+		// second profile was refused for using the first one's interface,
+		// which it had silently inherited seconds earlier.
 		if loaded, err := setup.ReadSettings(*settingsPath); err == nil {
-			settings = loaded
+			if loaded.ProfileName == "" || loaded.ProfileName == settings.ProfileName {
+				settings = loaded
+			}
 		}
 	}
 

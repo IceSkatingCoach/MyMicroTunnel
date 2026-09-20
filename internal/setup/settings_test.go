@@ -314,3 +314,34 @@ func TestTheStagedKeyPathSurvivesBetweenStages(t *testing.T) {
 		t.Errorf("the privileged stage would look in %q instead of %q", read.StagedKeyPath, s.StagedKeyPath)
 	}
 }
+
+// The staged settings file carries one deployment between two stages, and
+// the graphical front end hands the same path to every run. A file left by a
+// different profile must not be read as this one's: installing a second
+// profile inherited the first one's interface and endpoint that way, and was
+// then refused for colliding with it — against values nobody had typed.
+func TestStagedSettingsKnowWhichProfileTheyDescribe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "staged.json")
+
+	first := valid()
+	first.ProfileName = "work"
+	first.InterfaceName = "wg0"
+	first.Endpoint = "203.0.113.7"
+	if err := first.Write(path); err != nil {
+		t.Fatal(err)
+	}
+
+	read, err := ReadSettings(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.ProfileName != "work" {
+		t.Fatalf("the staged file does not say whose it is: %q", read.ProfileName)
+	}
+	// The caller compares this against the profile it was asked for; the
+	// field has to survive the round trip for that comparison to exist at
+	// all, which is what this pins.
+	if read.InterfaceName != "wg0" || read.Endpoint != "203.0.113.7" {
+		t.Errorf("the staged deployment did not survive: %+v", read)
+	}
+}
