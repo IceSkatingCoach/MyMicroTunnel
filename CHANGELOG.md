@@ -7,6 +7,17 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.7
+
+- Fixed: "utun8 is already on 10.0.0.0/8" when deploying a second profile.
+  The tunnel interface was given no netmask, so macOS widened its address to
+  the whole class A — the first tunnel appeared to occupy sixteen million
+  addresses, and the check that stops a tunnel swallowing a network you are
+  on refused every other private range. A tunnel now claims exactly its own
+  address, and this product's own interfaces are never mistaken for networks
+  to be protected from.
+- An existing tunnel keeps the old mask until it is reconnected once.
+
 ## 1.4.6
 
 - Fixed: installing a second VPN profile was still refused with "profile X

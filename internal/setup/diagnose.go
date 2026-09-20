@@ -360,7 +360,7 @@ func diagnoseAWS(ctx context.Context, report *Report, options DiagnoseOptions) {
 func diagnoseLocalNetworks(report *Report, config appConfig) {
 	report.section("networks this machine is on")
 
-	local, err := tunnel.LocalNetworks([]string{config.InterfaceName, tunnel.Device(config.InterfaceName)})
+	local, err := tunnel.LocalNetworks(ourDevices(config.InterfaceName))
 	if err != nil {
 		report.field("interfaces", "could not be listed: %v", firstLine(err.Error()))
 		return

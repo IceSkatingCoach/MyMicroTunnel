@@ -175,7 +175,15 @@ func address(device string, options Options) error {
 	}
 	// macOS wants the peer address as well as the local one on a point-to-point
 	// interface, and wg-quick passes the same address twice for exactly this.
-	if err := ifconfig(device, "inet", options.Address, options.Address, "alias"); err != nil {
+	//
+	// The netmask is explicit because ifconfig otherwise falls back to the
+	// classful default, and 10.100.0.2 is a class A: the interface then
+	// claimed 10.0.0.0/8 — sixteen million addresses — and the first tunnel
+	// on a machine made every other private range look occupied. The tunnel
+	// owns exactly its own address; the ranges it carries are routes, added
+	// separately from AllowedIPs.
+	if err := ifconfig(device, "inet", options.Address, options.Address,
+		"netmask", "255.255.255.255", "alias"); err != nil {
 		return err
 	}
 	if options.MTU > 0 {

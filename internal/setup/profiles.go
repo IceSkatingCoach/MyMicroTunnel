@@ -289,7 +289,7 @@ func (s Settings) ConflictsWithOtherProfiles() error {
 // time the range is already in every workstation's config and the honest
 // answer is to move off the network instead.
 func (s Settings) ConflictsWithLocalNetworks() error {
-	local, err := tunnel.LocalNetworks([]string{s.InterfaceName, tunnel.Device(s.InterfaceName)})
+	local, err := tunnel.LocalNetworks(ourDevices(s.InterfaceName))
 	if err != nil {
 		return nil
 	}

@@ -256,7 +256,7 @@ func RaiseTunnel(interfaceName, configPath string) error {
 // re-raising a tunnel that is up must not be refused because of the addresses
 // it put there itself.
 func CheckLocalNetworks(interfaceName string, file tunnel.File) error {
-	local, err := tunnel.LocalNetworks([]string{interfaceName, tunnel.Device(interfaceName)})
+	local, err := tunnel.LocalNetworks(ourDevices(interfaceName))
 	if err != nil {
 		// Not fatal. A machine whose interfaces cannot be listed is a machine
 		// with bigger problems, and refusing the tunnel would add one.
@@ -274,6 +274,24 @@ func CheckLocalNetworks(interfaceName string, file tunnel.File) error {
 			"  other machines on it. Move to another network, or redeploy this profile\n"+
 			"  with a --vpn-cidr that does not overlap.",
 		interfaceName, tunnel.Explain(collisions))
+}
+
+// ourDevices is every interface this product owns: the one being acted on,
+// and the ones the other profiles are using.
+//
+// A tunnel is not a network to be protected from — least of all from itself.
+// Before this, raising a second profile was refused because the first one's
+// utun was "a network this machine is already on", which is true and
+// useless.
+func ourDevices(interfaceName string) []string {
+	devices := []string{interfaceName, tunnel.Device(interfaceName)}
+	for _, profile := range AllProfileSettings() {
+		if profile.InterfaceName == "" {
+			continue
+		}
+		devices = append(devices, profile.InterfaceName, tunnel.Device(profile.InterfaceName))
+	}
+	return devices
 }
 
 // handshakeIsStale reports whether every peer has gone quiet. A peer that has

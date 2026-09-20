@@ -4,6 +4,7 @@ package tunnel
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -215,5 +216,24 @@ func TestParseStatusAssignsFieldsToTheRightPeer(t *testing.T) {
 		if peer.ReceivedBytes != 100 && peer.ReceivedBytes != 200 {
 			t.Errorf("a counter landed on the wrong peer: %+v", peer)
 		}
+	}
+}
+
+// The address a tunnel takes is its own and nothing else.
+//
+// ifconfig with no netmask falls back to the classful default, and every
+// address this product hands out is a class A — 10.100.0.2 became
+// 10.0.0.0/8, sixteen million addresses, and the first tunnel on a machine
+// made every other private range look occupied. Deploying a second profile
+// was then refused by the collision check, correctly and uselessly, against
+// the first profile's own interface.
+func TestTheTunnelClaimsOneAddressNotTheWholeClassA(t *testing.T) {
+	source, err := os.ReadFile("tunnel.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), `"netmask", "255.255.255.255"`) {
+		t.Error("the interface address is set without an explicit netmask, so macOS will " +
+			"widen it to the class A and the tunnel will claim 10.0.0.0/8")
 	}
 }
