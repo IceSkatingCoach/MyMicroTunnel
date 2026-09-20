@@ -234,15 +234,27 @@ func (s Settings) ClientKeyPath() string {
 
 // DefaultStackName is what a deployment is called when nobody says otherwise.
 //
-// The account and the region are in the name because the alternative — one
-// fixed name — makes the second deployment in an account collide with the
-// first, and because a stack name is the only thing a person sees in the
-// CloudFormation console when they are looking at three of them.
-func DefaultStackName(accountID, region string) string {
+// The account and the region are in the name because one fixed name makes the
+// second deployment in an account collide with the first, and because a stack
+// name is the only thing a person sees in the CloudFormation console when
+// they are looking at three of them.
+//
+// The profile is in it too, for every profile but the first. Account and
+// region alone are not unique either: two profiles on one Mac, in one account
+// and one region, is the ordinary way to serve two hostnames, and they were
+// both handed the same name — which reads as "this profile collides with
+// another one" against a name the user never chose. The default profile keeps
+// the short form, so the common case is still
+// mymicrotunnel-<account-id>-<region>.
+func DefaultStackName(accountID, region, profileName string) string {
 	if accountID == "" || region == "" {
 		return ""
 	}
-	return "mymicrotunnel-" + accountID + "-" + region
+	name := "mymicrotunnel-" + accountID + "-" + region
+	if profileName != "" && profileName != DefaultProfileName {
+		name += "-" + profileName
+	}
+	return name
 }
 
 func (s Settings) ServiceURL() string {

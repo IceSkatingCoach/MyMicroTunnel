@@ -21,7 +21,7 @@ func valid() Settings {
 	s.GatewaySubnetIDs = s.SubnetIDs
 	s.RouteTableIDs = []string{"rtb-aaa"}
 	s.HostedZoneID = "Z123456789"
-	s.StackName = DefaultStackName("123456789012", s.Region)
+	s.StackName = DefaultStackName("123456789012", s.Region, s.ProfileName)
 	return s
 }
 

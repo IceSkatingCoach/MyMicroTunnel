@@ -576,9 +576,14 @@ final class SetupWindowController: NSWindowController {
             ? (profileField.titleOfSelectedItem ?? "default")
             : "default"
         let region = selectedRegion
+        // The name carries the profile, so the picker's choice has to reach
+        // the engine: two profiles in one account and region would otherwise
+        // both be offered the same stack.
+        let vpnProfile = trimmed(vpnProfileField, or: "default")
 
         DispatchQueue.global(qos: .userInitiated).async {
-            var arguments = ["default-stack", "--profile", awsProfile]
+            var arguments = ["default-stack", "--profile", awsProfile,
+                             "--vpn-profile", vpnProfile]
             if !region.isEmpty {
                 arguments += ["--region", region]
             }

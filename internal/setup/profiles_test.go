@@ -11,7 +11,7 @@ import (
 // the second deployment in an account collide with the first — silently, by
 // updating it.
 func TestDefaultStackNameIsPerAccountAndRegion(t *testing.T) {
-	name := DefaultStackName("123456789012", "us-east-2")
+	name := DefaultStackName("123456789012", "us-east-2", DefaultProfileName)
 	if name != "mymicrotunnel-123456789012-us-east-2" {
 		t.Errorf("the default stack name is %q", name)
 	}
@@ -19,9 +19,20 @@ func TestDefaultStackNameIsPerAccountAndRegion(t *testing.T) {
 		t.Errorf("CloudFormation would reject %q as a stack name", name)
 	}
 
+	// A second profile in the same account and region needs a name of its
+	// own, or it is refused for colliding with the first against a name
+	// nobody chose.
+	second := DefaultStackName("123456789012", "us-east-2", "lab")
+	if second != "mymicrotunnel-123456789012-us-east-2-lab" {
+		t.Errorf("the second profile's stack is %q", second)
+	}
+	if second == name {
+		t.Error("two profiles in one account and region share a stack name")
+	}
+
 	// Nothing useful can be built before the credentials resolve, and a
-	// half-built name would deploy into a stack called "microtunnel--".
-	if DefaultStackName("", "us-east-2") != "" || DefaultStackName("1234", "") != "" {
+	// half-built name would deploy into a stack called "mymicrotunnel--".
+	if DefaultStackName("", "us-east-2", "") != "" || DefaultStackName("1234", "", "") != "" {
 		t.Error("a stack name was invented from an unknown account or region")
 	}
 }

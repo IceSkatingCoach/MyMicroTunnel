@@ -7,6 +7,15 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.4.5
+
+- Fixed: a second VPN profile was refused for two things nobody chose. It was
+  handed the interface wg0, which the first profile already had, and the same
+  stack name, because the name was built from the account and region alone.
+  Every profile after the first now gets its own interface and a stack name
+  ending in the profile's name; the first keeps
+  `mymicrotunnel-<account-id>-<region>`.
+
 ## 1.4.4
 
 - Every VPN profile now has its own submenu holding Connect, Test tunnel,

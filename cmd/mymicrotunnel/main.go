@@ -249,6 +249,19 @@ func runInstall(args []string) {
 	}
 	settings.Username = setup.CurrentUsername()
 
+	// An interface claimed by another profile is reassigned, but only for a
+	// deployment that does not exist yet: a profile with an endpoint has a
+	// tunnel, a config and a sudoers line under that name, and moving it
+	// would orphan all three.
+	if settings.Endpoint == "" {
+		for _, other := range setup.AllProfileSettings() {
+			if other.ProfileName != settings.ProfileName && other.InterfaceName == settings.InterfaceName {
+				settings.InterfaceName = setup.NextFreeInterface(setup.TakenInterfaces(settings.ProfileName))
+				break
+			}
+		}
+	}
+
 	// The tunnel addresses follow the tunnel subnet. Done before validation,
 	// because otherwise choosing a subnet for a second profile fails on two
 	// addresses the user never typed.
@@ -574,7 +587,7 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 		// account: one fixed default makes the second deployment in an
 		// account collide with the first.
 		if settings.StackName == "" {
-			settings.StackName = setup.DefaultStackName(account, settings.Region)
+			settings.StackName = setup.DefaultStackName(account, settings.Region, settings.ProfileName)
 			ui.Info("Deploying as %s", settings.StackName)
 		}
 	} else if settings.StackName == "" {
@@ -739,6 +752,7 @@ func runDefaultStack(args []string) {
 	flags := flag.NewFlagSet("default-stack", flag.ExitOnError)
 	profile := flags.String("profile", "default", "AWS profile")
 	region := flags.String("region", "", "AWS region; taken from the profile when empty")
+	vpnProfile := flags.String("vpn-profile", setup.DefaultProfileName, "which deployment on this machine")
 	_ = flags.Parse(args)
 
 	ctx := context.Background()
@@ -758,7 +772,7 @@ func runDefaultStack(args []string) {
 	if err != nil {
 		return
 	}
-	fmt.Println(setup.DefaultStackName(account, resolvedRegion))
+	fmt.Println(setup.DefaultStackName(account, resolvedRegion, *vpnProfile))
 }
 
 // runPeers is the operational view of a deployment: which workstations may
@@ -974,6 +988,10 @@ func runProfileSave(args []string) {
 	if err != nil {
 		settings = defaults
 		settings.ProfileName = *vpnProfile
+		// Not the default interface: a saved draft that claims wg0 is one the
+		// install later refuses for colliding with the profile that already
+		// has it, against a value the user never typed.
+		settings.InterfaceName = setup.NextFreeInterface(setup.TakenInterfaces(*vpnProfile))
 	}
 
 	applyString(typed, "profile", awsProfile, &settings.Profile)
