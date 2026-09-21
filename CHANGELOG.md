@@ -7,6 +7,13 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.2
+
+- Setup has a **Delete profile…** button beside Save, for the profile
+  selected in the picker. Same two questions as the menu's version, and the
+  same result: the AWS stack, the tunnel, the key, the sudoers entry and the
+  local record go; the app stays.
+
 ## 1.5.1
 
 - Fixed, for good, the phantom "default" VPN profile. The install runs in

@@ -49,6 +49,7 @@ final class SetupWindowController: NSWindowController {
     private let logView = NSTextView()
     private let logScroll = NSScrollView()
     private let progress = NSProgressIndicator()
+    private let deleteButton = NSPushButton(title: "Delete profile…", target: nil, action: nil)
     private let saveButton = NSPushButton(title: "Save", target: nil, action: nil)
     private let installButton = NSPushButton(title: "Deploy CloudFormation", target: nil, action: nil)
 
@@ -245,8 +246,11 @@ final class SetupWindowController: NSWindowController {
 
         saveButton.target = self
         saveButton.action = #selector(saveProfile)
+        deleteButton.target = self
+        deleteButton.action = #selector(deleteSelectedProfile)
 
-        let footer = NSStackView(views: [progress, statusLabel, NSView(), saveButton, installButton])
+        let footer = NSStackView(views: [progress, statusLabel, NSView(),
+                                         deleteButton, saveButton, installButton])
         footer.orientation = .horizontal
         footer.spacing = 8
         footer.translatesAutoresizingMaskIntoConstraints = false
@@ -479,6 +483,7 @@ final class SetupWindowController: NSWindowController {
         let isNew = selected == Self.newProfileTitle
 
         vpnProfileField.isEnabled = isNew
+        deleteButton.isEnabled = !isNew
         if isNew {
             // Suggested, not imposed: a second deployment usually wants its
             // own tunnel subnet as well, and defaulting both together is what
@@ -651,6 +656,74 @@ final class SetupWindowController: NSWindowController {
     private func append(_ line: String) {
         logView.string += line + "\n"
         logView.scrollToEndOfDocument(nil)
+    }
+
+    /// Deletes the selected VPN profile, its AWS stack and everything it
+    /// left on this Mac.
+    ///
+    /// Asked twice, and the two questions differ: the first is "did you mean
+    /// this profile", answerable by reading the name; the second lists what
+    /// cannot be brought back. One dialog collapses those into a single
+    /// skim.
+    @objc private func deleteSelectedProfile() {
+        guard !isRunning else { return }
+
+        let selected = vpnProfilePicker.titleOfSelectedItem ?? ""
+        guard selected != Self.newProfileTitle, !selected.isEmpty else { return }
+
+        let first = NSAlert()
+        first.messageText = "Delete the VPN profile \(selected)?"
+        first.informativeText = """
+            This removes the deployment from this Mac: its tunnel, its private key, its \
+            permission to move the tunnel without a password, and its entry in the menu.
+            """
+        first.alertStyle = .warning
+        first.addButton(withTitle: "Continue")
+        first.addButton(withTitle: "Cancel")
+        guard first.runModal() == .alertFirstButtonReturn else { return }
+
+        let second = NSAlert()
+        second.messageText = "Also delete the AWS deployment for \(selected)?"
+        second.informativeText = """
+            The CloudFormation stack goes with it: the load balancer, the gateway, the \
+            certificate, the Elastic IP and the DNS record. The hostname stops answering \
+            for every Mac registered to it, not only this one.
+
+            This cannot be undone. Deploying again builds a new stack with a new address.
+            """
+        second.alertStyle = .critical
+        second.addButton(withTitle: "Delete \(selected) and its stack")
+        second.addButton(withTitle: "Cancel")
+        guard second.runModal() == .alertFirstButtonReturn else { return }
+
+        isRunning = true
+        installButton.isEnabled = false
+        deleteButton.isEnabled = false
+        progress.startAnimation(nil)
+        statusLabel.stringValue = "Deleting \(selected)…"
+        logView.string = ""
+        revealLog()
+
+        // As root, through the helper: the sudoers rule, the tunnel
+        // configuration and the private key are root-owned. --keep-app
+        // because deleting a profile is not uninstalling the product.
+        let command = "\(shellQuote(SetupEngine.binaryPath)) uninstall --non-interactive"
+            + " --vpn-profile \(shellQuote(selected)) --delete-stack --delete-keys --keep-app"
+        let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = runCommand("/usr/bin/osascript", ["-e", script])
+            DispatchQueue.main.async {
+                self.append(result.output)
+                self.isRunning = false
+                self.installButton.isEnabled = true
+                self.progress.stopAnimation(nil)
+                self.statusLabel.stringValue = result.status == 0
+                    ? "Deleted \(selected)"
+                    : "Could not delete \(selected)"
+                self.loadVpnProfiles(select: nil)
+            }
+        }
     }
 
     /// Records the form without deploying anything.
