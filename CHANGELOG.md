@@ -14,6 +14,10 @@ The format is one `## <version>` heading per release, newest first.
   previous run had left in the temporary directory rather than the profile
   it was told to deploy — so the stack changed and the port selection was
   ignored. What is recorded under the named profile now wins.
+- Fixed: publishing the service on 443 would not stick. The setup window
+  showed a service port of 3000:443 as plain "3000", so the next save wrote
+  the published port back to 3000 and the hostname stopped answering without
+  its port number. The field now shows both halves whenever they differ.
 
 ## 1.5.5
 

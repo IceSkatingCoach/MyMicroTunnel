@@ -170,7 +170,7 @@ final class SetupWindowController: NSWindowController {
         stackField.placeholderString = "mymicrotunnel-<account-id>-<region>"
         domainField.placeholderString = "updates.example.com"
         portField.stringValue = defaults.servicePort
-        portField.placeholderString = "3000, or 3000:8443 to publish it elsewhere"
+        portField.placeholderString = "3000, or 3000:443 to publish it elsewhere"
         tcpPortsField.placeholderString = "optional, up to 10: 5432, 3000:8080"
         healthPathField.stringValue = defaults.healthCheckPath
         vpnCidrField.stringValue = defaults.vpnCidr
@@ -544,9 +544,14 @@ final class SetupWindowController: NSWindowController {
         domainField.stringValue = text("domainName")
         // Shown the way it was typed: a bare number when the two halves
         // agree, local:published when they do not.
+        //
+        // 443 is not a special case here, whatever earlier versions did. A
+        // bare number publishes the port under its own name, so collapsing
+        // 3000:443 to "3000" made the next Save write the published port
+        // back to 3000 — the form silently undoing what was typed into it.
         let local = text("servicePort")
         let published = text("publishedPort")
-        portField.stringValue = (published.isEmpty || published == "443" || published == local)
+        portField.stringValue = (published.isEmpty || published == local)
             ? local : "\(local):\(published)"
         healthPathField.stringValue = text("healthCheckPath")
         vpnCidrField.stringValue = text("vpnCidr")
@@ -1116,7 +1121,7 @@ enum SetupEngine {
 /// a name in somebody else's zone.
 struct SetupDefaults {
     let vpnProfile = "default"
-    let servicePort = "3000"  // published on 443 unless written local:published
+    let servicePort = "3000"  // published under its own name unless written local:published
     let healthCheckPath = "/hc"
     let vpnCidr = "10.100.0.0/24"
     /// 0 keeps the gateway running. It is the default because switching a
