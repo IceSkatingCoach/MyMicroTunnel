@@ -7,6 +7,17 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.0
+
+- Two different things were both called "profile", and leaving the VPN
+  profile's name blank silently made it "default" — which is also what an AWS
+  profile is usually called. A deploy with the name empty therefore built a
+  VPN profile nobody had asked for, on an interface of its own, and then
+  reported errors about `profiles/default` that read as though the AWS
+  profile were at fault. Setup asks for a name instead of inventing one, the
+  fields are labelled **AWS profile** and **VPN profile name**, and the
+  errors say which kind they mean.
+
 ## 1.4.9
 
 - Each VPN profile's submenu has **Delete profile…**. It asks twice — once

@@ -185,7 +185,7 @@ final class SetupWindowController: NSWindowController {
 
         form.addArrangedSubview(sectionLabel("AWS credentials"))
         form.addArrangedSubview(credentialMode)
-        form.addArrangedSubview(labelled("Profile", profileField))
+        form.addArrangedSubview(labelled("AWS profile", profileField))
         form.addArrangedSubview(labelled("Access key id", accessKeyField))
         form.addArrangedSubview(labelled("Secret access key", secretKeyField))
         form.addArrangedSubview(labelled("Region", regionPicker))
@@ -193,7 +193,7 @@ final class SetupWindowController: NSWindowController {
         form.addArrangedSubview(spacer())
         form.addArrangedSubview(sectionLabel("Deployment"))
         form.addArrangedSubview(labelled("VPN profile", vpnProfilePicker))
-        form.addArrangedSubview(labelled("Name", vpnProfileField))
+        form.addArrangedSubview(labelled("VPN profile name", vpnProfileField))
         form.addArrangedSubview(labelled("Stack name", stackField))
         form.addArrangedSubview(labelled("Public hostname", domainField))
         form.addArrangedSubview(labelled("Service port", portField))
@@ -395,6 +395,30 @@ final class SetupWindowController: NSWindowController {
         row.orientation = .horizontal
         row.spacing = 10
         return row
+    }
+
+    /// The VPN profile being worked on, or nil with the reason shown.
+    ///
+    /// Never a silent fallback. An empty name used to become "default",
+    /// which is also what the AWS profile is usually called — so a deploy
+    /// with the name left blank built a VPN profile nobody had asked for,
+    /// on its own interface, and then reported errors about
+    /// profiles/default that read as though the AWS profile were at fault.
+    private func requireProfileName() -> String? {
+        let name = vpnProfileField.stringValue.trimmingCharacters(in: .whitespaces)
+        if !name.isEmpty {
+            return name
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "This VPN profile needs a name"
+        alert.informativeText = """
+            It names the deployment on this Mac — its tunnel, its stack and its entry in \
+            the menu. It is not your AWS profile, which is chosen above.
+            """
+        alert.runModal()
+        window?.makeFirstResponder(vpnProfileField)
+        return nil
     }
 
     /// Trimmed text, or a fallback when the field was left empty. Every one of
@@ -632,9 +656,8 @@ final class SetupWindowController: NSWindowController {
     /// saved is the description of a deployment; the stack is untouched until
     /// Deploy CloudFormation is pressed.
     @objc private func saveProfile() {
-        guard !isRunning else { return }
+        guard !isRunning, let name = requireProfileName() else { return }
 
-        let name = trimmed(vpnProfileField, or: "default")
         var arguments = [
             "profile", "save",
             "--vpn-profile", name,
@@ -666,7 +689,7 @@ final class SetupWindowController: NSWindowController {
     }
 
     @objc private func startInstall() {
-        guard !isRunning else { return }
+        guard !isRunning, requireProfileName() != nil else { return }
 
         // Caught here rather than by CloudFormation five minutes in. The engine
         // validates the same thing; this only saves the round trip.

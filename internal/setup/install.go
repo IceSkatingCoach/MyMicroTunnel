@@ -461,11 +461,12 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 	if asRoot && !sys.Exists(keyPath) {
 		if _, err := os.Stat(staged); err != nil {
 			return fmt.Errorf(
-				"there is no private key at %s and none was staged at %s.\n\n"+
+				"VPN profile %q has no private key at %s, and none was staged at %s.\n\n"+
 					"  The deployment stage reused a public key it had recorded, so it never\n"+
-					"  generated one. Delete %s and run the deployment stage again; it will\n"+
-					"  mint a fresh key and register it with the gateway.",
-				keyPath, staged, PublicKeyPath(s.ProfileName))
+					"  generated one. Delete %s and deploy this VPN profile again; it will\n"+
+					"  mint a fresh key and register it with the gateway.\n\n"+
+					"  (This is the VPN profile, not the AWS profile of the same name.)",
+				s.ProfileName, keyPath, staged, PublicKeyPath(s.ProfileName))
 		}
 	}
 
