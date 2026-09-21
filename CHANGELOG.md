@@ -7,6 +7,14 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.6
+
+- Fixed: saving a new port deployed the old one. Saving in the setup window
+  runs a CloudFormation update, and that update read the settings the
+  previous run had left in the temporary directory rather than the profile
+  it was told to deploy — so the stack changed and the port selection was
+  ignored. What is recorded under the named profile now wins.
+
 ## 1.5.5
 
 - Saving a change that belongs to AWS now applies it. The ports, the
@@ -20,11 +28,6 @@ The format is one `## <version>` heading per release, newest first.
   Matching a utun device to a profile needs a root-only file, so an
   unprivileged deploy could not recognise itself; it now matches on the
   profile's own addresses as well.
-- Fixed: that deployment could apply the previous ports rather than the ones
-  just saved. The setup window hands the deployment stage a file the last run
-  left behind, and the stage read it back instead of the profile it was told
-  to deploy — so the change set ran and the port selection was ignored. When
-  a profile is named, what is recorded under that profile now wins.
 
 ## 1.5.4
 
