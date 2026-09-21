@@ -7,6 +7,15 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.8
+
+- The one-click install link no longer carries the vendor's AWS account
+  number. CloudFormation will not fetch a template through a CDN, so that
+  link has to name an S3 bucket directly, and the bucket it named was the
+  site's — whose name ends in the account id. The template now lives in a
+  bucket of its own called mymicrotunnel-launch. Nothing about your own
+  deployment changes; the old link still works.
+
 ## 1.5.7
 
 - Fixed: a second deployment into the same VPC never served anything. Its

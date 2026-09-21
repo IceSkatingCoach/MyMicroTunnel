@@ -99,16 +99,18 @@ feed-setup:
 # not a customer's stack. The hostname is a new one rather than an edit of an
 # existing record, so this does not disturb whatever the zone already serves.
 #
-#   make site-setup SITE_BUCKET=mymicrotunnel-site-985658740042 \
-#        SITE_DOMAIN=mymicrotunnel.maragato.ca HOSTED_ZONE_ID=Z00534512C27FKRK6YRDT
+#   make site-setup SITE_BUCKET=mymicrotunnel-site-<account-id> \
+#        LAUNCH_BUCKET=mymicrotunnel-launch \
+#        SITE_DOMAIN=mymicrotunnel.example.com HOSTED_ZONE_ID=<zone-id>
 site-setup:
-	@test -n "$(SITE_BUCKET)" || (echo "Usage: make site-setup SITE_BUCKET=<name> SITE_DOMAIN=<hostname> HOSTED_ZONE_ID=<id>" && false)
+	@test -n "$(SITE_BUCKET)" || (echo "Usage: make site-setup SITE_BUCKET=<name> LAUNCH_BUCKET=<name> SITE_DOMAIN=<hostname> HOSTED_ZONE_ID=<id>" && false)
+	@test -n "$(LAUNCH_BUCKET)" || (echo "site-setup needs LAUNCH_BUCKET" && false)
 	@test -n "$(SITE_DOMAIN)" || (echo "site-setup needs SITE_DOMAIN" && false)
 	@test -n "$(HOSTED_ZONE_ID)" || (echo "site-setup needs HOSTED_ZONE_ID" && false)
 	aws cloudformation deploy --region us-east-1 \
 		--template-file infra/cloudformation-site.yaml \
 		--stack-name $(SITE_STACK) \
-		--parameter-overrides BucketName=$(SITE_BUCKET) DomainName=$(SITE_DOMAIN) HostedZoneId=$(HOSTED_ZONE_ID) \
+		--parameter-overrides BucketName=$(SITE_BUCKET) LaunchBucketName=$(LAUNCH_BUCKET) DomainName=$(SITE_DOMAIN) HostedZoneId=$(HOSTED_ZONE_ID) \
 		--no-fail-on-empty-changeset
 	aws cloudformation describe-stacks --region us-east-1 --stack-name $(SITE_STACK) \
 		--query 'Stacks[0].Outputs' --output table
@@ -117,9 +119,11 @@ site-setup:
 # cached copies. The bucket and distribution are read from the stack rather
 # than repeated here, so the two cannot disagree about which site this is.
 #
-# deploy-role.yaml is uploaded twice on purpose: launch/ is the path the
-# one-click link points at, and the copy at the root is the one people are
-# told to read before they trust it.
+# deploy-role.yaml goes to three places on purpose: the launch bucket is what
+# the one-click link points at — CloudFormation will not follow a CloudFront
+# URL, so that name is public and therefore carries no account number — while
+# the two copies in the site bucket serve the older links already shipped and
+# the copy people are told to read before they trust it.
 site-publish:
 	$(eval SITE_BUCKET_NAME := $(shell aws cloudformation describe-stacks --region us-east-1 \
 		--stack-name $(SITE_STACK) --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' --output text))
@@ -130,6 +134,10 @@ site-publish:
 	# Screenshots, when there are any. --size-only so republishing the page
 	# does not re-upload megabytes of unchanged images every time.
 	@test -d site/img && aws s3 sync site/img s3://$(SITE_BUCKET_NAME)/img --size-only || true
+	$(eval LAUNCH_BUCKET_NAME := $(shell aws cloudformation describe-stacks --region us-east-1 \
+		--stack-name $(SITE_STACK) --query 'Stacks[0].Outputs[?OutputKey==`LaunchBucketName`].OutputValue' --output text))
+	@test -n "$(LAUNCH_BUCKET_NAME)" || (echo "the $(SITE_STACK) stack has no launch bucket; re-run make site-setup" && false)
+	aws s3 cp infra/cloudformation-deploy-role.yaml s3://$(LAUNCH_BUCKET_NAME)/deploy-role.yaml --content-type text/yaml
 	aws s3 cp infra/cloudformation-deploy-role.yaml s3://$(SITE_BUCKET_NAME)/launch/deploy-role.yaml --content-type text/yaml
 	aws s3 cp infra/cloudformation-deploy-role.yaml s3://$(SITE_BUCKET_NAME)/deploy-role.yaml --content-type text/yaml
 	aws cloudfront create-invalidation --distribution-id $(SITE_DISTRIBUTION) --paths '/*' \

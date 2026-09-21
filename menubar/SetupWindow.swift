@@ -84,7 +84,7 @@ final class SetupWindowController: NSWindowController {
     /// they are signed into.
     private static let deployIdentityURL = URL(string:
         "https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review"
-        + "?templateURL=https%3A%2F%2Fmymicrotunnel-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml"
+        + "?templateURL=https%3A%2F%2Fmymicrotunnel-launch.s3.amazonaws.com%2Fdeploy-role.yaml"
         + "&stackName=mymicrotunnel-deploy-role")!
 
     private static let guideURL = URL(string: "https://mymicrotunnel.maragato.ca/#install")!

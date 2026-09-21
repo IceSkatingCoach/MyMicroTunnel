@@ -23,6 +23,16 @@ Parameters:
     AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
     ConstraintDescription: must be a valid S3 bucket name
 
+  LaunchBucketName:
+    Type: String
+    Description: >-
+      Globally unique name for the small bucket holding the one-click
+      CloudFormation template. Separate from the site bucket because its name
+      is visible to everyone who reads the install link, and a bucket cannot
+      be renamed afterwards.
+    AllowedPattern: '^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$'
+    ConstraintDescription: must be a valid S3 bucket name
+
   DomainName:
     Type: String
     Description: Hostname to serve the site from, for example mymicrotunnel.example.com
@@ -50,6 +60,52 @@ Resources:
         # bucket remains reachable only through CloudFront.
         BlockPublicPolicy: false
         RestrictPublicBuckets: false
+
+  # The one-click install template, and nothing else.
+  #
+  # Its own bucket because CloudFormation will not follow a CloudFront URL —
+  # see CloudFormationMayFetchTheLaunchTemplate below — so this name is read
+  # by every person who looks at the install link before trusting it. The
+  # site bucket's name carries the account number, which is no secret but is
+  # nobody's business either, and an S3 bucket cannot be renamed.
+  LaunchBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref LaunchBucketName
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        # Off for the same reason as the site bucket: the console fetches the
+        # template anonymously. Everything in here is a public template.
+        BlockPublicPolicy: false
+        RestrictPublicBuckets: false
+
+  LaunchBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LaunchBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AnyoneMayReadTheLaunchTemplate
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub 'arn:${AWS::Partition}:s3:::${LaunchBucketName}/*'
+          - Sid: NothingUnencryptedInTransit
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !Sub 'arn:${AWS::Partition}:s3:::${LaunchBucketName}'
+              - !Sub 'arn:${AWS::Partition}:s3:::${LaunchBucketName}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
 
   BucketPolicy:
     Type: AWS::S3::BucketPolicy
@@ -185,6 +241,9 @@ Outputs:
   BucketName:
     Value: !Ref SiteBucket
 
+  LaunchBucketName:
+    Value: !Ref LaunchBucket
+
   DistributionId:
     Description: Needed to invalidate the cached page after an edit
     Value: !Ref Distribution
@@ -194,5 +253,5 @@ Outputs:
       One-click link that creates the installer's IAM identity in whichever
       account the person following it is signed into.
     Value: !Sub
-      - 'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2F${BucketName}.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role'
-      - BucketName: !Ref BucketName
+      - 'https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2F${LaunchBucket}.s3.amazonaws.com%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role'
+      - LaunchBucket: !Ref LaunchBucket

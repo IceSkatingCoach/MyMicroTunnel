@@ -70,7 +70,7 @@ the default; you can set another during setup.
 The installer deploys into your account, so it needs a key. Give it a dedicated
 one with only the permissions it uses, rather than an administrator key.
 
-**[Create the deploy identity](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fmymicrotunnel-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role)** — one click, in whichever
+**[Create the deploy identity](https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fmymicrotunnel-launch.s3.amazonaws.com%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role)** — one click, in whichever
 AWS account you are signed into. It creates an IAM user holding only the
 permissions the installer uses.
 
