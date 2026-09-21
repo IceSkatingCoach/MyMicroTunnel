@@ -281,3 +281,27 @@ func TestAnApplyingStageRefusesAnotherProfilesSettings(t *testing.T) {
 		t.Errorf("the refusal does not say whose file it is:\n%s", output)
 	}
 }
+
+// The privileged stage is invoked with a path and nothing else — that is
+// what the path is for. Comparing the file's profile against the built-in
+// default then refused every staged install, which is the opposite failure
+// to inventing one: the deployment existed, was correct, and was rejected.
+func TestAStagedFileNamesItsOwnProfileWhenNobodyElseDoes(t *testing.T) {
+	binary, store := build(t), home(t)
+
+	if output, code := run(t, binary, store, "profile", "save",
+		"--vpn-profile", "lab", "--domain", "lab.example.com"); code != 0 {
+		t.Fatalf("saving: %s", output)
+	}
+	staged := filepath.Join(store, "Library", "Application Support", "MyMicroTunnel",
+		"profiles", "lab", "settings.json")
+
+	// No --vpn-profile: the file decides. It gets far enough to attempt the
+	// privileged work, which is as far as a test without root can go — the
+	// point is that it does not refuse the file first.
+	output, _ := run(t, binary, store, "install", "--stage", "root",
+		"--non-interactive", "--settings", staged)
+	if strings.Contains(output, "describes the VPN profile") {
+		t.Errorf("a correct staged deployment was refused:\n%s", output)
+	}
+}

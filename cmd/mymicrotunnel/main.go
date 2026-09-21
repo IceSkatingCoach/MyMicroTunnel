@@ -188,6 +188,12 @@ func runInstall(args []string) {
 	if stored, err := setup.LoadProfileSettings(*vpnProfile); err == nil {
 		settings = stored
 	}
+	// Which flags were actually typed, as opposed to left at their default.
+	// The settings file below is read against this: a profile nobody named
+	// is a profile the file itself decides.
+	typed := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { typed[f.Name] = true })
+
 	if *settingsPath != "" {
 		loaded, err := setup.ReadSettings(*settingsPath)
 		switch {
@@ -206,6 +212,12 @@ func runInstall(args []string) {
 			// The first stage is allowed to start from nothing: that is what
 			// a new profile is.
 		case loaded.ProfileName == "" || loaded.ProfileName == settings.ProfileName:
+			settings = loaded
+		case !typed["vpn-profile"]:
+			// Nobody named a profile, so the file names it. The privileged
+			// stage is invoked with the path and nothing else — that is the
+			// point of the path — and comparing its contents against the
+			// built-in default would refuse every staged install.
 			settings = loaded
 		case setup.Stage(*stage) != setup.StageAll && setup.Stage(*stage) != setup.StageDeploy:
 			// Refused, not ignored. An applying stage has no other source of
@@ -229,8 +241,6 @@ func runInstall(args []string) {
 	// A flag that was actually typed wins over whatever the settings file
 	// carried; one left at its default does not, or resuming a staged install
 	// would undo every answer the earlier stage recorded.
-	typed := map[string]bool{}
-	flags.Visit(func(f *flag.Flag) { typed[f.Name] = true })
 	applyString(typed, "vpn-profile", vpnProfile, &settings.ProfileName)
 	applyString(typed, "interface", interfaceName, &settings.InterfaceName)
 	applyString(typed, "region", region, &settings.Region)

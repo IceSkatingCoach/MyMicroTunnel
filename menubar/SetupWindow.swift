@@ -852,7 +852,11 @@ final class SetupWindowController: NSWindowController {
         append("▸ Authorising the privileged step")
 
         let binary = SetupEngine.binaryPath
-        let command = "\(shellQuote(binary)) install --stage root --settings \(shellQuote(settingsPath))"
+        // The profile is named as well as the path: belt and braces, and it
+        // makes the command readable in a log.
+        let command = "\(shellQuote(binary)) install --stage root"
+            + " --vpn-profile \(shellQuote(trimmed(vpnProfileField, or: "default")))"
+            + " --settings \(shellQuote(settingsPath))"
         let script = "do shell script \(appleScriptQuote(command)) with administrator privileges"
 
         DispatchQueue.global(qos: .userInitiated).async {

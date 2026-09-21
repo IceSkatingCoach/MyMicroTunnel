@@ -7,6 +7,15 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.4
+
+- Fixed: 1.5.3 refused correct installs. The privileged stage is handed a
+  settings file and nothing else, so it compared that file against the
+  built-in default profile name and rejected it — the opposite failure to
+  inventing a profile, and just as effective at stopping a deploy. A file is
+  now trusted to name its own profile when nobody else has named one, and
+  refused only when it contradicts a profile that was asked for explicitly.
+
 ## 1.5.3
 
 - Fixed the last way a phantom "default" profile could appear. A stage that
