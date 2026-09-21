@@ -299,6 +299,7 @@ func (s Settings) ConflictsWithOtherProfiles() error {
 // answer is to move off the network instead.
 func (s Settings) ConflictsWithLocalNetworks() error {
 	local, err := tunnel.LocalNetworks(ourDevices(s.InterfaceName))
+	local = withoutOurTunnels(local, s.ClientAddress, s.GatewayAddress)
 	if err != nil {
 		return nil
 	}

@@ -276,6 +276,7 @@ func RaiseTunnel(interfaceName, configPath string) error {
 // it put there itself.
 func CheckLocalNetworks(interfaceName string, file tunnel.File) error {
 	local, err := tunnel.LocalNetworks(ourDevices(interfaceName))
+	local = withoutOurTunnels(local)
 	if err != nil {
 		// Not fatal. A machine whose interfaces cannot be listed is a machine
 		// with bigger problems, and refusing the tunnel would add one.
@@ -311,6 +312,50 @@ func ourDevices(interfaceName string) []string {
 		devices = append(devices, profile.InterfaceName, tunnel.Device(profile.InterfaceName))
 	}
 	return devices
+}
+
+// ourAddresses is the second half of recognising our own tunnels, and the
+// half that works without privileges.
+//
+// A running tunnel's utun device can only be matched to a profile by reading
+// /var/run/wireguard/<name>.name, which is root-only — so an unprivileged
+// deploy could not tell that utun8 carrying 10.110.0.2/32 was the very
+// profile being deployed, and refused it for colliding with itself. The
+// addresses are in the profile store, which the owner can always read.
+func ourAddresses() []string {
+	var addresses []string
+	for _, profile := range AllProfileSettings() {
+		if profile.ClientAddress != "" {
+			addresses = append(addresses, profile.ClientAddress)
+		}
+		if profile.GatewayAddress != "" {
+			addresses = append(addresses, profile.GatewayAddress)
+		}
+	}
+	return addresses
+}
+
+// withoutOurTunnels drops the interfaces carrying one of this product's own
+// tunnel addresses, whatever the kernel happened to call them.
+func withoutOurTunnels(local []tunnel.Network, extra ...string) []tunnel.Network {
+	ours := map[string]bool{}
+	for _, address := range append(ourAddresses(), extra...) {
+		if address != "" {
+			ours[address] = true
+		}
+	}
+
+	kept := make([]tunnel.Network, 0, len(local))
+	for _, network := range local {
+		// A point-to-point tunnel address is a /32, which is what the
+		// interface reports once it stops claiming the whole class A.
+		size, _ := network.Net.Mask.Size()
+		if size == 32 && ours[network.Net.IP.String()] {
+			continue
+		}
+		kept = append(kept, network)
+	}
+	return kept
 }
 
 // handshakeIsStale reports whether every peer has gone quiet. A peer that has

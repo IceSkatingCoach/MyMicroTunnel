@@ -361,6 +361,7 @@ func diagnoseLocalNetworks(report *Report, config appConfig) {
 	report.section("networks this machine is on")
 
 	local, err := tunnel.LocalNetworks(ourDevices(config.InterfaceName))
+	local = withoutOurTunnels(local, config.ClientAddress)
 	if err != nil {
 		report.field("interfaces", "could not be listed: %v", firstLine(err.Error()))
 		return

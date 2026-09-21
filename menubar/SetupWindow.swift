@@ -658,6 +658,61 @@ final class SetupWindowController: NSWindowController {
         logView.scrollToEndOfDocument(nil)
     }
 
+    /// The fields of a profile that live in CloudFormation, as one string.
+    ///
+    /// Compared before and after a save to decide whether AWS is now out of
+    /// step. Everything else — the profile's name, whether it reconnects at
+    /// login, which AWS profile authenticates — is local and needs no
+    /// deployment.
+    private func stackSignature(of profileName: String) -> String {
+        let path = Tunnel.profilesDirectory
+            .appendingPathComponent(profileName)
+            .appendingPathComponent("settings.json")
+        guard let data = try? Data(contentsOf: path),
+              let stored = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else {
+            return ""
+        }
+
+        let fields = ["servicePort", "publishedPort", "domainName", "healthCheckPath",
+                      "vpnCidr", "alarmEmail", "stackName", "region"]
+        var parts = fields.map { "\($0)=\(stored[$0] ?? "")" }
+        parts.append("tcpPorts=\((stored["tcpPorts"] as? [String] ?? []).joined(separator: ","))")
+        parts.append("idle=\(stored["idleTimeoutMinutes"] as? Int ?? 0)")
+        return parts.joined(separator: "|")
+    }
+
+    /// Runs the deployment stage on its own, to bring the stack in line with
+    /// what was just saved.
+    private func applyToAws(profileName: String) {
+        isRunning = true
+        installButton.isEnabled = false
+        deleteButton.isEnabled = false
+        progress.startAnimation(nil)
+        logView.string = ""
+        revealLog()
+
+        var arguments = ["install", "--json", "--non-interactive", "--stage", "deploy",
+                         "--settings", settingsPath, "--vpn-profile", profileName]
+        if !selectedRegion.isEmpty {
+            arguments += ["--region", selectedRegion]
+        }
+        if credentialMode.indexOfSelectedItem == 0 {
+            arguments += ["--profile", profileField.titleOfSelectedItem ?? "default"]
+        }
+
+        stream(arguments) { [weak self] success in
+            guard let self else { return }
+            self.isRunning = false
+            self.installButton.isEnabled = true
+            self.deleteButton.isEnabled = true
+            self.progress.stopAnimation(nil)
+            self.statusLabel.stringValue = success
+                ? "Saved \(profileName) and applied it"
+                : "Saved \(profileName); applying it to AWS failed"
+        }
+    }
+
     /// Deletes the selected VPN profile, its AWS stack and everything it
     /// left on this Mac.
     ///
@@ -736,6 +791,7 @@ final class SetupWindowController: NSWindowController {
     @objc private func saveProfile() {
         guard !isRunning, let name = requireProfileName() else { return }
         beginRun(for: name)
+        let before = stackSignature(of: name)
 
         var arguments = [
             "profile", "save",
@@ -763,8 +819,25 @@ final class SetupWindowController: NSWindowController {
             statusLabel.stringValue = "Could not save \(name)"
             return
         }
-        statusLabel.stringValue = "Saved \(name)"
+        let deployed = Tunnel.installed().contains { $0.profileName == name && $0.deployed }
         loadVpnProfiles(select: name)
+
+        // Most of this form is the CloudFormation stack: the ports, the
+        // hostname, the health check path, the idle timeout, the tunnel
+        // subnet. Saving one of those and stopping there leaves the load
+        // balancer checking a port nothing listens on — it reports the
+        // target unhealthy and forwards nothing, which presents as "the port
+        // forward stopped working" with no hint that a deploy is owed.
+        //
+        // So the save applies it. None of these fields touch the tunnel
+        // configuration or the private key, so this is the unprivileged
+        // stage alone: no password, and the log below shows it happening.
+        if deployed, before != stackSignature(of: name) {
+            statusLabel.stringValue = "Applying \(name) to AWS…"
+            applyToAws(profileName: name)
+            return
+        }
+        statusLabel.stringValue = "Saved \(name)"
     }
 
     @objc private func startInstall() {
