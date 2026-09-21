@@ -22,6 +22,9 @@ The format is one `## <version>` heading per release, newest first.
   goes through.
 - Fixed: the port hint still said a bare service port is published on 443. It
   is published under its own name, which is what the engine has always done.
+- Fixed: runs of blank space in the middle of sentences, in the first-run
+  instructions, the port hint and the new donation panel. The wrapped lines
+  of those texts had been joined without their line breaks.
 
 ## 1.5.6
 

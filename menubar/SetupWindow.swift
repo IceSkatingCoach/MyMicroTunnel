@@ -319,17 +319,17 @@ final class SetupWindowController: NSWindowController {
 
     private func firstRunNote() -> NSTextField {
         let note = NSTextField(wrappingLabelWithString: """
-            1.  Create the AWS identity this installs with. The button below opens             CloudFormation in your own account and creates two IAM users: one that             installs, and a narrower one the app runs as afterwards. Then open that             user in IAM, create an access key, and paste the two values below — or             pick an AWS profile you already have.
+            1.  Create the AWS identity this installs with. The button below opens CloudFormation in your own account and creates two IAM users: one that installs, and a narrower one the app runs as afterwards. Then open that user in IAM, create an access key, and paste the two values below — or pick an AWS profile you already have.
 
-            2.  You need a public Route53 hosted zone for the domain you will serve             from: example.com if the hostname will be updates.example.com. This never             creates or deletes a zone. The hostname needs three labels, and it is             repointed rather than refused if it already exists.
+            2.  You need a public Route53 hosted zone for the domain you will serve from: example.com if the hostname will be updates.example.com. This never creates or deletes a zone. The hostname needs three labels, and it is repointed rather than refused if it already exists.
 
-            3.  Fill in the form. Region is a list, and the stack name fills itself in             from your account and region once both are known.
+            3.  Fill in the form. Region is a list, and the stack name fills itself in from your account and region once both are known.
 
-            4.  Press Install. macOS asks for your password once, for the tunnel             configuration, the private key and the narrow sudoers rule that lets the             menu bar switch the tunnel without asking again.
+            4.  Press Install. macOS asks for your password once, for the tunnel configuration, the private key and the narrow sudoers rule that lets the menu bar switch the tunnel without asking again.
 
-            5.  It finishes by proving the path: tunnel up, gateway answers, load             balancer healthy, hostname returns 200. If a step fails it says which.
+            5.  It finishes by proving the path: tunnel up, gateway answers, load balancer healthy, hostname returns 200. If a step fails it says which.
 
-            The credentials you type are used once, to mint the app's own key, which             is kept in your login Keychain. Roughly USD 26/month of AWS, in your             account, and the switch in the menu bar decides whether the world can             reach you.
+            The credentials you type are used once, to mint the app's own key, which is kept in your login Keychain. Roughly USD 26/month of AWS, in your account, and the switch in the menu bar decides whether the world can reach you.
             """)
         note.font = .systemFont(ofSize: 11)
         note.textColor = .secondaryLabelColor
@@ -391,7 +391,7 @@ final class SetupWindowController: NSWindowController {
     /// readings differ by whether your service moves or the hostname does.
     private func portHint() -> NSTextField {
         let hint = NSTextField(wrappingLabelWithString: """
-            Ports are written local:published — the port here first, the port the             hostname answers on second. 5432 publishes 5432 under its own name.             3000:8080 reaches port 3000 on this Mac and answers as 8080 on the hostname.             The service above follows the same rule: 3000 answers on 3000, and 3000:443             publishes it as HTTPS on 443 instead.
+            Ports are written local:published — the port here first, the port the hostname answers on second. 5432 publishes 5432 under its own name. 3000:8080 reaches port 3000 on this Mac and answers as 8080 on the hostname. The service above follows the same rule: 3000 answers on 3000, and 3000:443 publishes it as HTTPS on 443 instead.
             """)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
@@ -1173,9 +1173,9 @@ final class DonateWindowController: NSWindowController {
         thanks.font = .boldSystemFont(ofSize: 17)
 
         let body = NSTextField(wrappingLabelWithString: """
-            MyMicroTunnel is free software, licensed under the GPL, and it stays             that way: the source is yours to read, change and pass on.
+            MyMicroTunnel is free software, licensed under the GPL, and it stays that way: the source is yours to read, change and pass on.
 
-            Donations do not buy features. They pay for what keeping this honest             costs — the AWS account the end-to-end tests deploy real gateways             into, and the compliance verification every release goes through             before it is signed and published.
+            Donations do not buy features. They pay for what keeping this honest costs — the AWS account the end-to-end tests deploy real gateways into, and the compliance verification every release goes through before it is signed and published.
 
             Scan the code, or use the link below.
             """)
