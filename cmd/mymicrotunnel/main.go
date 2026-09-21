@@ -207,10 +207,22 @@ func runInstall(args []string) {
 			// a new profile is.
 		case loaded.ProfileName == "" || loaded.ProfileName == settings.ProfileName:
 			settings = loaded
+		case setup.Stage(*stage) != setup.StageAll && setup.Stage(*stage) != setup.StageDeploy:
+			// Refused, not ignored. An applying stage has no other source of
+			// truth, so ignoring the file leaves it with the built-in
+			// defaults — which is how a deployment for a VPN profile called
+			// "default" appeared on a machine that had no such profile. An
+			// older front end passing the path of a different profile is
+			// exactly the case: wrong is not the same as absent, and both
+			// have to stop here.
+			ui.Fail("%s describes the VPN profile %q, not %q.\n\n"+
+				"  This stage applies what the deployment stage recorded. Applying another\n"+
+				"  profile's deployment would build a tunnel nobody asked for; re-run the\n"+
+				"  whole install for %q.",
+				*settingsPath, loaded.ProfileName, settings.ProfileName, settings.ProfileName)
 		default:
-			// A file describing a different VPN profile is not this one's.
-			// The graphical front end once handed every profile the same
-			// path, so the profile deployed last was read as the new one's.
+			// The first stage may start from anything: it is about to work
+			// the deployment out for itself.
 		}
 	}
 

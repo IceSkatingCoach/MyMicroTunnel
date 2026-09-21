@@ -254,3 +254,30 @@ func TestAnUnknownProfileIsAnError(t *testing.T) {
 		t.Errorf("the error does not name the problem:\n%s", output)
 	}
 }
+
+// An applying stage must also refuse a settings file that describes a
+// different VPN profile. Ignoring it left the stage on the built-in
+// defaults, which is how a deployment for a profile called "default"
+// appeared on a machine that had no such profile: an older front end was
+// still passing one shared path, and the file it pointed at belonged to
+// another profile.
+func TestAnApplyingStageRefusesAnotherProfilesSettings(t *testing.T) {
+	binary, store := build(t), home(t)
+
+	// A settings file for "other", handed to a stage asked for "lab".
+	if output, code := run(t, binary, store, "profile", "save",
+		"--vpn-profile", "other", "--domain", "other.example.com"); code != 0 {
+		t.Fatalf("saving: %s", output)
+	}
+	staged := filepath.Join(store, "Library", "Application Support", "MyMicroTunnel",
+		"profiles", "other", "settings.json")
+
+	output, code := run(t, binary, store, "install", "--stage", "root",
+		"--non-interactive", "--vpn-profile", "lab", "--settings", staged)
+	if code == 0 {
+		t.Fatalf("a stage applied another profile's deployment:\n%s", output)
+	}
+	if !strings.Contains(output, `describes the VPN profile "other"`) {
+		t.Errorf("the refusal does not say whose file it is:\n%s", output)
+	}
+}

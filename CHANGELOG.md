@@ -7,6 +7,16 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.3
+
+- Fixed the last way a phantom "default" profile could appear. A stage that
+  applies a deployment now refuses a settings file describing a *different*
+  VPN profile, instead of ignoring it and falling back to the built-in
+  defaults. An app left running from before 1.4.6 still passes one shared
+  path for every profile, and the file it points at belongs to whichever
+  profile was deployed last — wrong is not the same as absent, and both stop
+  the install now.
+
 ## 1.5.2
 
 - Setup has a **Delete profile…** button beside Save, for the profile
