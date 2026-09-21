@@ -148,6 +148,25 @@ site-publish:
 publish:
 	go run ./cmd/publish
 
+# The Homebrew cask, regenerated from VERSION and the package in build/. Run
+# after publish: --check asks the CDN whether the release the cask names is
+# actually downloadable, which is the failure a user would otherwise hit.
+cask:
+	go run ./cmd/cask --check
+
+# Copies the generated cask into the tap working copy and pushes it. TAP is a
+# checkout of github.com/IceSkatingCoach/homebrew-mymicrotunnel.
+#
+#   make cask-publish TAP=~/src/homebrew-mymicrotunnel
+cask-publish: cask
+	@test -n "$(TAP)" || (echo "Usage: make cask-publish TAP=<path to homebrew-mymicrotunnel checkout>" && false)
+	@test -d "$(TAP)/.git" || (echo "$(TAP) is not a git checkout" && false)
+	mkdir -p $(TAP)/Casks
+	cp packaging/homebrew/mymicrotunnel.rb $(TAP)/Casks/mymicrotunnel.rb
+	cd $(TAP) && git add Casks/mymicrotunnel.rb \
+		&& git commit -m "mymicrotunnel $(shell cat VERSION)" \
+		&& git push
+
 # The whole release, in the order the steps depend on each other. Everything
 # here is idempotent except publish, which refuses to overwrite a version that
 # is already out.
@@ -165,6 +184,7 @@ release:
 	$(MAKE) pkg-notarized PROFILE=$(PROFILE)
 	$(MAKE) appcast
 	$(MAKE) publish
+	$(MAKE) cask
 
 app:
 	$(MAKE) -C menubar app

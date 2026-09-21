@@ -115,7 +115,18 @@ If the name already exists in the zone, it is repointed rather than refused.
 
 ## Step 3 — Install the app
 
-Open `MyMicroTunnel.pkg` and follow the installer. It places:
+With Homebrew:
+
+```sh
+brew tap IceSkatingCoach/mymicrotunnel
+brew trust IceSkatingCoach/mymicrotunnel
+brew install --cask mymicrotunnel
+```
+
+Homebrew 7 refuses a cask from a tap outside its own repositories until you
+say you trust it. That is the middle line, and it is asked once.
+
+Or open `MyMicroTunnel.pkg` and follow the installer. Either way it places:
 
 ```
 /Applications/MyMicroTunnel.app                                   the menu bar app

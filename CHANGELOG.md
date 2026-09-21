@@ -9,6 +9,10 @@ The format is one `## <version>` heading per release, newest first.
 
 ## 1.5.8
 
+- Installable with Homebrew: `brew tap IceSkatingCoach/mymicrotunnel` then
+  `brew install --cask mymicrotunnel`. The cask installs the same signed,
+  notarized package this feed serves, so an install from either side updates
+  from the other.
 - The one-click install link no longer carries the vendor's AWS account
   number. CloudFormation will not fetch a template through a CDN, so that
   link has to name an S3 bucket directly, and the bucket it named was the
