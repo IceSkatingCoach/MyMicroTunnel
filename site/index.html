@@ -161,6 +161,10 @@
       <a class="btn btn-ghost" href="mailto:mymicrotunnel@maragato.ca">mymicrotunnel@maragato.ca</a>
     </div>
     <p class="sub">
+      Homebrew works too — <code>brew install --cask mymicrotunnel</code> from
+      <a href="#install">this tap</a>.
+    </p>
+    <p class="sub">
       Universal build, signed and notarized. macOS 13 or later, Apple silicon or Intel.
       Free software under the GPL — the AWS bill is the only thing it costs.
     </p>
@@ -241,7 +245,8 @@
       The package carries its own WireGuard. macOS has no in-kernel implementation, so the
       data plane is <code>wireguard-go</code> — MIT-licensed, built from a pinned and
       checksummed release, shipped inside the installer and signed with the same identity.
-      No Homebrew, no AWS CLI, no Node, no Python.
+      Nothing to install beforehand: no AWS CLI, no Node, no Python, and no Homebrew
+      unless you would rather install it that way.
     </p>
     <div class="note">
       <strong>Why not <code>wg-quick</code>?</strong> On macOS it is a bash script that needs
@@ -291,7 +296,7 @@
         <h3>Create AWS credentials for the installer</h3>
         <p>One click, in whichever AWS account you are signed into. It creates two IAM
            users: one that installs, and a narrower one the app runs as afterwards.</p>
-        <p><a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fmymicrotunnel-site-985658740042.s3.amazonaws.com%2Flaunch%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role">Create the deploy identity</a></p>
+        <p><a class="btn btn-primary" href="https://console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/review?templateURL=https%3A%2F%2Fmymicrotunnel-launch.s3.amazonaws.com%2Fdeploy-role.yaml&stackName=mymicrotunnel-deploy-role">Create the deploy identity</a></p>
         <p>Both hold only the permissions this product uses — you can
            read every one of them in
            <a href="https://mymicrotunnel.maragato.ca/deploy-role.yaml">the template</a> before you
@@ -310,11 +315,21 @@
            If the name already exists it is repointed rather than refused.</p>
       </li>
       <li>
-        <h3>Download and open the installer</h3>
+        <h3>Install it</h3>
+        <p>With Homebrew:</p>
+<pre><code>brew tap IceSkatingCoach/mymicrotunnel
+brew trust IceSkatingCoach/mymicrotunnel
+brew install --cask mymicrotunnel</code></pre>
+        <p>Homebrew 7 refuses a cask from a tap outside its own repositories until you say
+           you trust it, which is the middle line and is asked once. The cask installs the
+           same package as the button below, and you can
+           <a href="https://github.com/IceSkatingCoach/homebrew-mymicrotunnel/blob/main/Casks/mymicrotunnel.rb">read it</a>
+           before you run it.</p>
+        <p>Or download it:</p>
         <p><a class="btn btn-primary" href="https://downloads.maragato.ca/MyMicroTunnel.pkg">Download MyMicroTunnel.pkg</a></p>
-        <p>Signed and notarized. It places the app, a command-line tool, the privileged
-           helper and the tunnel, then opens the setup window by itself. The app updates
-           itself from then on, so this link is only ever needed once.</p>
+        <p>Signed and notarized either way. It places the app, a command-line tool, the
+           privileged helper and the tunnel, then opens the setup window by itself. The app
+           updates itself from then on, so this is only ever needed once.</p>
       </li>
       <li>
         <h3>Fill in the setup window</h3>
