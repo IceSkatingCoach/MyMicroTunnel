@@ -20,6 +20,11 @@ The format is one `## <version>` heading per release, newest first.
   Matching a utun device to a profile needs a root-only file, so an
   unprivileged deploy could not recognise itself; it now matches on the
   profile's own addresses as well.
+- Fixed: that deployment could apply the previous ports rather than the ones
+  just saved. The setup window hands the deployment stage a file the last run
+  left behind, and the stage read it back instead of the profile it was told
+  to deploy — so the change set ran and the port selection was ignored. When
+  a profile is named, what is recorded under that profile now wins.
 
 ## 1.5.4
 

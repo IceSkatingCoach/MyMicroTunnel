@@ -180,62 +180,15 @@ func runInstall(args []string) {
 	ui.SetJSON(*asJSON)
 	interactive := !*nonInteractive
 
-	// A profile that is already installed is the starting point for a re-run,
-	// so an install that only changes the ports does not have to repeat every
-	// other answer.
-	settings := defaults
-	settings.ProfileName = *vpnProfile
-	if stored, err := setup.LoadProfileSettings(*vpnProfile); err == nil {
-		settings = stored
-	}
 	// Which flags were actually typed, as opposed to left at their default.
-	// The settings file below is read against this: a profile nobody named
-	// is a profile the file itself decides.
+	// What a stage starts from is read against this: a profile nobody named is
+	// a profile the carrier file itself decides.
 	typed := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { typed[f.Name] = true })
 
-	if *settingsPath != "" {
-		loaded, err := setup.ReadSettings(*settingsPath)
-		switch {
-		case err != nil && setup.Stage(*stage) != setup.StageAll && setup.Stage(*stage) != setup.StageDeploy:
-			// Refused rather than guessed. The privileged and finishing
-			// stages exist to apply a deployment the first stage worked out;
-			// with the file missing they used to fall back to the built-in
-			// defaults and write a tunnel for a VPN profile called "default"
-			// on whatever interface was free — a deployment nobody asked for,
-			// reported as an error about a profile nobody created.
-			ui.Fail("Cannot read %s: %v.\n\n"+
-				"  This stage applies what the deployment stage recorded there. Running it\n"+
-				"  without that file would invent a deployment; re-run the whole install.",
-				*settingsPath, err)
-		case err != nil:
-			// The first stage is allowed to start from nothing: that is what
-			// a new profile is.
-		case loaded.ProfileName == "" || loaded.ProfileName == settings.ProfileName:
-			settings = loaded
-		case !typed["vpn-profile"]:
-			// Nobody named a profile, so the file names it. The privileged
-			// stage is invoked with the path and nothing else — that is the
-			// point of the path — and comparing its contents against the
-			// built-in default would refuse every staged install.
-			settings = loaded
-		case setup.Stage(*stage) != setup.StageAll && setup.Stage(*stage) != setup.StageDeploy:
-			// Refused, not ignored. An applying stage has no other source of
-			// truth, so ignoring the file leaves it with the built-in
-			// defaults — which is how a deployment for a VPN profile called
-			// "default" appeared on a machine that had no such profile. An
-			// older front end passing the path of a different profile is
-			// exactly the case: wrong is not the same as absent, and both
-			// have to stop here.
-			ui.Fail("%s describes the VPN profile %q, not %q.\n\n"+
-				"  This stage applies what the deployment stage recorded. Applying another\n"+
-				"  profile's deployment would build a tunnel nobody asked for; re-run the\n"+
-				"  whole install for %q.",
-				*settingsPath, loaded.ProfileName, settings.ProfileName, settings.ProfileName)
-		default:
-			// The first stage may start from anything: it is about to work
-			// the deployment out for itself.
-		}
+	settings, resolveErr := settingsForRun(*vpnProfile, *settingsPath, setup.Stage(*stage), typed)
+	if resolveErr != nil {
+		ui.Fail("%v", resolveErr)
 	}
 
 	// A flag that was actually typed wins over whatever the settings file
@@ -481,6 +434,81 @@ func runInstall(args []string) {
 		fmt.Printf("  The padlock shield in the menu bar toggles %s.\n", settings.DomainName)
 	}
 	ui.Done("Installed")
+}
+
+// settingsForRun decides what an install stage starts from: the VPN profile
+// as recorded on this machine, or the settings file the deployment stage
+// leaves behind for the stages that follow it.
+//
+// Returns the reason when the two cannot be reconciled, rather than guessing:
+// an applying stage handed the wrong file has no other source of truth, and
+// guessing there is how a deployment for a profile nobody created appeared.
+func settingsForRun(profileName, settingsPath string, stage setup.Stage, typed map[string]bool) (setup.Settings, error) {
+	firstStage := stage == setup.StageAll || stage == setup.StageDeploy
+
+	// A profile that is already installed is the starting point for a re-run,
+	// so an install that only changes the ports does not have to repeat every
+	// other answer.
+	settings := setup.Defaults()
+	settings.ProfileName = profileName
+	storedProfile := false
+	if stored, err := setup.LoadProfileSettings(profileName); err == nil {
+		settings = stored
+		storedProfile = true
+	}
+
+	if settingsPath == "" {
+		return settings, nil
+	}
+
+	loaded, err := setup.ReadSettings(settingsPath)
+	switch {
+	case err != nil && !firstStage:
+		// Refused rather than guessed. The privileged and finishing stages
+		// exist to apply a deployment the first stage worked out; with the
+		// file missing they used to fall back to the built-in defaults and
+		// write a tunnel for a VPN profile called "default" on whatever
+		// interface was free — a deployment nobody asked for, reported as an
+		// error about a profile nobody created.
+		return settings, fmt.Errorf("Cannot read %s: %v.\n\n"+
+			"  This stage applies what the deployment stage recorded there. Running it\n"+
+			"  without that file would invent a deployment; re-run the whole install.",
+			settingsPath, err)
+	case err != nil:
+		// The first stage is allowed to start from nothing: that is what a
+		// new profile is.
+	case firstStage && storedProfile && typed["vpn-profile"]:
+		// The file is the first stage's output, not its input. It is left
+		// behind by the previous run, so reading it back deploys the ports
+		// that run used rather than the ones just saved to the named profile
+		// — a change set that runs and changes nothing that was asked for.
+		// The profile store is the source of truth whenever the caller named
+		// the profile; a typed flag still wins over both.
+	case loaded.ProfileName == "" || loaded.ProfileName == settings.ProfileName:
+		settings = loaded
+	case !typed["vpn-profile"]:
+		// Nobody named a profile, so the file names it. The privileged stage
+		// is invoked with the path and nothing else — that is the point of
+		// the path — and comparing its contents against the built-in default
+		// would refuse every staged install.
+		settings = loaded
+	case !firstStage:
+		// Refused, not ignored. An applying stage has no other source of
+		// truth, so ignoring the file leaves it with the built-in defaults —
+		// which is how a deployment for a VPN profile called "default"
+		// appeared on a machine that had no such profile. An older front end
+		// passing the path of a different profile is exactly the case: wrong
+		// is not the same as absent, and both have to stop here.
+		return settings, fmt.Errorf("%s describes the VPN profile %q, not %q.\n\n"+
+			"  This stage applies what the deployment stage recorded. Applying another\n"+
+			"  profile's deployment would build a tunnel nobody asked for; re-run the\n"+
+			"  whole install for %q.",
+			settingsPath, loaded.ProfileName, settings.ProfileName, settings.ProfileName)
+	default:
+		// The first stage may start from anything: it is about to work the
+		// deployment out for itself.
+	}
+	return settings, nil
 }
 
 // firstNonEmpty is the precedence every command shares: what was typed, then
