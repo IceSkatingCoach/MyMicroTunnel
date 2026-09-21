@@ -334,3 +334,26 @@ func TestThePostinstallRestartsWhatTheUpdateReplaced(t *testing.T) {
 		}
 	}
 }
+
+// Two deployments into one VPC, which is the case this was found in. The
+// workstation can hold exactly one route for the VPC's own CIDR, so a second
+// tunnel's replies left through the first tunnel and the health check was
+// never answered: an unhealthy target and a hostname serving nothing, behind
+// a tunnel that looked up. Translating the source into the tunnel is what
+// keeps the reply inside the tunnel it arrived on.
+func TestTheGatewayTranslatesWhatItForwardsIntoTheTunnel(t *testing.T) {
+	deployable := TemplateForDeploy()
+
+	if !strings.Contains(deployable, "dnf -y install wireguard-tools aws-cfn-bootstrap nftables") {
+		t.Error("the gateway does not install nftables, so the translation rule cannot be applied")
+	}
+	if !strings.Contains(deployable, `oifname "wg0" ip saddr != $VPN_CIDR snat to $GATEWAY_ADDRESS`) {
+		t.Error("the gateway does not translate forwarded traffic to its own tunnel address")
+	}
+	// Applied by the reconcile script rather than once at boot, so a reboot
+	// or anything else that flushes nftables does not leave the deployment
+	// quietly broken until somebody replaces the instance.
+	if !strings.Contains(deployable, "nft -f /etc/microtunnel-nat.rules") {
+		t.Error("nothing re-applies the translation rule, so it is lost on the first flush")
+	}
+}

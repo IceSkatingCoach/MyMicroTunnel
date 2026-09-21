@@ -7,6 +7,16 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.7
+
+- Fixed: a second deployment into the same VPC never served anything. Its
+  tunnel came up and looked healthy, but the load balancer's health check
+  was answered through the first deployment's tunnel — a workstation can
+  hold one route for the VPC, and the first deployment had it. The gateway
+  now translates what it forwards to its own tunnel address, so replies stay
+  in the tunnel they arrived on and any number of deployments can share a
+  VPC. Deploy again to pick it up: the gateway is replaced.
+
 ## 1.5.6
 
 - Fixed: saving a new port deployed the old one. Saving in the setup window

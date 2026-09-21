@@ -485,7 +485,7 @@ Resources:
                 echo '/swapfile none swap sw 0 0' >> /etc/fstab
               fi
 
-              dnf -y install wireguard-tools aws-cfn-bootstrap
+              dnf -y install wireguard-tools aws-cfn-bootstrap nftables
               trap '/opt/aws/bin/cfn-signal -e 1 --stack ${AWS::StackName} --resource GatewayGroup --region ${AWS::Region} || true' ERR
 
               # Sourced by the reconcile script, so the two never disagree about
@@ -527,6 +527,34 @@ Resources:
               echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-wireguard.conf
               sysctl --system
 
+              # Everything this gateway forwards into the tunnel leaves with
+              # the gateway's own tunnel address as its source.
+              #
+              # Without this the workstation sees the load balancer's VPC
+              # address and has to route its replies back through the right
+              # tunnel — which means a route for the whole VPC, pointed at
+              # that tunnel. One workstation can hold only one such route, so
+              # a second deployment into the same VPC took its health check
+              # replies out of the first deployment's tunnel and never
+              # answered: the target went unhealthy and the hostname served
+              # nothing, while the tunnel itself looked perfectly up.
+              #
+              # The replies now go to an address inside this deployment's own
+              # tunnel subnet, which is unique per deployment, so any number
+              # of them can share a VPC. Nothing is lost by it: the load
+              # balancer terminates TLS, so what the workstation saw was the
+              # balancer's address rather than the caller's either way.
+              cat > /etc/microtunnel-nat.rules <<NAT
+              table ip microtunnel {}
+              delete table ip microtunnel
+              table ip microtunnel {
+                chain postrouting {
+                  type nat hook postrouting priority srcnat; policy accept;
+                  oifname "wg0" ip saddr != $VPN_CIDR snat to $GATEWAY_ADDRESS
+                }
+              }
+              NAT
+
               mkdir -p /etc/wireguard
               chmod 700 /etc/wireguard
               umask 077
@@ -560,11 +588,17 @@ Resources:
 
               install -m 0755 /dev/stdin /usr/local/sbin/microtunnel-gateway-sync <<'SYNC'
               #!/bin/bash
-              # Reconciles the three things that are not CloudFormation's to own:
-              # the VPN route, the WireGuard peer list, and the metric that says
-              # whether anybody is actually connected.
+              # Reconciles the four things that are not CloudFormation's to own:
+              # the VPN route, the source translation into the tunnel, the
+              # WireGuard peer list, and the metric that says whether anybody is
+              # actually connected.
               set -euo pipefail
               . /etc/microtunnel-gateway.env
+
+              # The file holds the whole table and deletes it first, so
+              # applying it again is how the rule survives a reboot or anything
+              # else that flushes nftables.
+              nft -f /etc/microtunnel-nat.rules
 
               for table in $ROUTE_TABLES; do
                 aws ec2 replace-route --region "$REGION" \
