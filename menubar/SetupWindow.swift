@@ -69,6 +69,11 @@ final class SetupWindowController: NSWindowController {
     /// inventing a profile called "default".
     private var settingsPath = ""
 
+    /// Held rather than made on each press, so pressing the button twice
+    /// brings the one panel forward instead of stacking a second copy of it
+    /// on top of the first.
+    private let donateWindow = DonateWindowController()
+
     private func beginRun(for profileName: String) {
         settingsPath = NSTemporaryDirectory() + "microtunnel-setup-\(profileName).json"
     }
@@ -209,6 +214,11 @@ final class SetupWindowController: NSWindowController {
         form.addArrangedSubview(labelled("Notify on failure", alarmEmailField))
         form.addArrangedSubview(labelled("", superviseCheckbox))
 
+        form.addArrangedSubview(spacer())
+        form.addArrangedSubview(sectionLabel("Donate to us"))
+        form.addArrangedSubview(donateNote())
+        form.addArrangedSubview(donateButtons())
+
         let costNote = NSTextField(wrappingLabelWithString:
             "Deploys AWS resources into your own account that cost roughly USD 26/month. "
             + "The VPC, subnets and Route53 zone are found automatically. You will be "
@@ -340,6 +350,32 @@ final class SetupWindowController: NSWindowController {
         return row
     }
 
+    /// The line the form shows. Short on purpose: the panel behind the button
+    /// is where the explanation belongs, and a paragraph here would sit
+    /// between somebody and the deploy button they came for.
+    private func donateNote() -> NSTextField {
+        let note = NSTextField(wrappingLabelWithString:
+            "This is free software under the GPL, and it stays that way. Donations pay "
+            + "for the AWS account the tests deploy into and for the compliance checks "
+            + "each release goes through.")
+        note.font = .systemFont(ofSize: 11)
+        note.textColor = .secondaryLabelColor
+        return note
+    }
+
+    private func donateButtons() -> NSStackView {
+        let donate = NSPushButton(title: "Donate to us…", target: self,
+                                  action: #selector(openDonate))
+        let row = NSStackView(views: [donate])
+        row.orientation = .horizontal
+        row.spacing = 10
+        return row
+    }
+
+    @objc private func openDonate() {
+        donateWindow.show()
+    }
+
     @objc private func openDeployIdentity() {
         NSWorkspace.shared.open(Self.deployIdentityURL)
     }
@@ -355,7 +391,7 @@ final class SetupWindowController: NSWindowController {
     /// readings differ by whether your service moves or the hostname does.
     private func portHint() -> NSTextField {
         let hint = NSTextField(wrappingLabelWithString: """
-            Ports are written local:published — the port here first, the port the             hostname answers on second. 5432 publishes 5432 under its own name.             3000:8080 reaches port 3000 on this Mac and answers as 8080 on the hostname.             The service above follows the same rule: 3000 is HTTPS on 443, and 3000:8443             publishes it on 8443 instead.
+            Ports are written local:published — the port here first, the port the             hostname answers on second. 5432 publishes 5432 under its own name.             3000:8080 reaches port 3000 on this Mac and answers as 8080 on the hostname.             The service above follows the same rule: 3000 answers on 3000, and 3000:443             publishes it as HTTPS on 443 instead.
             """)
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
@@ -1097,6 +1133,108 @@ private final class LineBuffer {
             pending = String(pending[pending.index(after: newline)...])
         }
         return lines
+    }
+}
+
+/// The panel behind "Donate to us…".
+///
+/// A window rather than an alert: an alert cannot show the QR at a size a
+/// phone camera reads reliably, and it would take the whole app modal for
+/// something nobody should be forced to answer.
+final class DonateWindowController: NSWindowController {
+    /// What the bundled QR encodes. Kept here as well so the panel can offer
+    /// the link to anyone reading the screen it is displayed on — a QR is no
+    /// use to somebody already at the machine.
+    private static let donateURL = URL(string:
+        "https://www.paypal.com/qrcodes/managed/20eb2b30-8733-4cad-9e70-4e0ef7ceaa44"
+        + "?utm_source=consweb_more")!
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 380, height: 520),
+            styleMask: [.titled, .closable],
+            backing: .buffered, defer: false)
+        window.title = "Donate to us"
+        self.init(window: window)
+        window.contentView = Self.content(target: self)
+        window.center()
+    }
+
+    func show() {
+        // Brought to the front even when it is already open, which is what
+        // pressing the button again means.
+        NSApp.activate(ignoringOtherApps: true)
+        showWindow(nil)
+        window?.makeKeyAndOrderFront(nil)
+    }
+
+    private static func content(target: DonateWindowController) -> NSView {
+        let thanks = NSTextField(labelWithString: "Thank you")
+        thanks.font = .boldSystemFont(ofSize: 17)
+
+        let body = NSTextField(wrappingLabelWithString: """
+            MyMicroTunnel is free software, licensed under the GPL, and it stays             that way: the source is yours to read, change and pass on.
+
+            Donations do not buy features. They pay for what keeping this honest             costs — the AWS account the end-to-end tests deploy real gateways             into, and the compliance verification every release goes through             before it is signed and published.
+
+            Scan the code, or use the link below.
+            """)
+        body.font = .systemFont(ofSize: 12)
+
+        let code = NSImageView()
+        code.image = qrImage()
+        code.imageScaling = .scaleProportionallyUpOrDown
+        code.translatesAutoresizingMaskIntoConstraints = false
+        code.widthAnchor.constraint(equalToConstant: 240).isActive = true
+        code.heightAnchor.constraint(equalToConstant: 240).isActive = true
+        // Nothing is drawn when the image is missing, so the panel says what
+        // to do instead of showing a hole where a QR should be.
+        code.isHidden = code.image == nil
+
+        let open = NSPushButton(title: "Open in browser", target: target,
+                                action: #selector(openInBrowser))
+        let copy = NSPushButton(title: "Copy link", target: target,
+                                action: #selector(copyLink))
+        let buttons = NSStackView(views: [open, copy])
+        buttons.orientation = .horizontal
+        buttons.spacing = 10
+
+        let stack = NSStackView(views: [thanks, body, code, buttons])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 14
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 20, bottom: 20, right: 20)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        body.preferredMaxLayoutWidth = 320
+
+        let container = NSView()
+        container.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(lessThanOrEqualTo: container.bottomAnchor),
+        ])
+        return container
+    }
+
+    /// Bundled beside the engine, so the panel works offline and cannot show
+    /// whatever a network somewhere in the middle decided to serve instead.
+    private static func qrImage() -> NSImage? {
+        guard let url = Bundle.main.url(forResource: "donate-qr", withExtension: "png") else {
+            return nil
+        }
+        return NSImage(contentsOf: url)
+    }
+
+    @objc private func openInBrowser() {
+        NSWorkspace.shared.open(Self.donateURL)
+    }
+
+    @objc private func copyLink() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Self.donateURL.absoluteString, forType: .string)
     }
 }
 

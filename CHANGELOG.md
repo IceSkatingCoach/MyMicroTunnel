@@ -16,6 +16,12 @@ The format is one `## <version>` heading per release, newest first.
   now translates what it forwards to its own tunnel address, so replies stay
   in the tunnel they arrived on and any number of deployments can share a
   VPC. Deploy again to pick it up: the gateway is replaced.
+- A "Donate to us" section in setup, with a QR code and a link. This is GPL
+  software and stays that way; what donations pay for is the AWS account the
+  end-to-end tests deploy into and the compliance verification each release
+  goes through.
+- Fixed: the port hint still said a bare service port is published on 443. It
+  is published under its own name, which is what the engine has always done.
 
 ## 1.5.6
 

@@ -49,6 +49,9 @@ app: engine
 	# Shipped inside the bundle so a customer needs neither Homebrew nor a
 	# second installer before this one.
 	cp ../third_party/wireguard-go $(WGGO)
+	# The donation QR, shown by the setup window. Bundled rather than fetched,
+	# so the panel works on a machine that is offline or behind a proxy.
+	cp Resources/donate-qr.png $(DEST)/Contents/Resources/donate-qr.png
 	# The updater keys are added only when there is somewhere to update from.
 	# An SUFeedURL of "" makes Sparkle log an error nobody reads; no key at all
 	# makes the app say plainly that it cannot update.
