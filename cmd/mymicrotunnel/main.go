@@ -189,18 +189,28 @@ func runInstall(args []string) {
 		settings = stored
 	}
 	if *settingsPath != "" {
-		// Only when it describes the profile being installed.
-		//
-		// The file carries a deployment from one stage to the next, and the
-		// graphical front end hands it the same path every time. A file left
-		// by an earlier run of a *different* profile therefore won every
-		// field — including the interface and the endpoint — so installing a
-		// second profile was refused for using the first one's interface,
-		// which it had silently inherited seconds earlier.
-		if loaded, err := setup.ReadSettings(*settingsPath); err == nil {
-			if loaded.ProfileName == "" || loaded.ProfileName == settings.ProfileName {
-				settings = loaded
-			}
+		loaded, err := setup.ReadSettings(*settingsPath)
+		switch {
+		case err != nil && setup.Stage(*stage) != setup.StageAll && setup.Stage(*stage) != setup.StageDeploy:
+			// Refused rather than guessed. The privileged and finishing
+			// stages exist to apply a deployment the first stage worked out;
+			// with the file missing they used to fall back to the built-in
+			// defaults and write a tunnel for a VPN profile called "default"
+			// on whatever interface was free — a deployment nobody asked for,
+			// reported as an error about a profile nobody created.
+			ui.Fail("Cannot read %s: %v.\n\n"+
+				"  This stage applies what the deployment stage recorded there. Running it\n"+
+				"  without that file would invent a deployment; re-run the whole install.",
+				*settingsPath, err)
+		case err != nil:
+			// The first stage is allowed to start from nothing: that is what
+			// a new profile is.
+		case loaded.ProfileName == "" || loaded.ProfileName == settings.ProfileName:
+			settings = loaded
+		default:
+			// A file describing a different VPN profile is not this one's.
+			// The graphical front end once handed every profile the same
+			// path, so the profile deployed last was read as the new one's.
 		}
 	}
 

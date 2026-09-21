@@ -61,12 +61,15 @@ final class SetupWindowController: NSWindowController {
     private var isRunning = false
     /// Where the deploy stage leaves the settings for the privileged stage.
     ///
-    /// Per profile: one shared path meant the file describing the profile
-    /// deployed last was read by the install of the next one, which then
-    /// inherited its interface and its endpoint and was refused for
-    /// colliding with it.
-    private var settingsPath: String {
-        NSTemporaryDirectory() + "microtunnel-setup-\(trimmed(vpnProfileField, or: "default")).json"
+    /// Per profile, and fixed for the duration of a run. Recomputing it from
+    /// the form meant the three stages could disagree about which file they
+    /// were passing between them: the privileged stage was handed a path the
+    /// deploy stage had never written, found nothing, and fell back to
+    /// inventing a profile called "default".
+    private var settingsPath = ""
+
+    private func beginRun(for profileName: String) {
+        settingsPath = NSTemporaryDirectory() + "microtunnel-setup-\(profileName).json"
     }
 
     /// Where a person with no AWS identity for this starts. The console link
@@ -502,7 +505,9 @@ final class SetupWindowController: NSWindowController {
     }
 
     private func suggestedProfileName(_ taken: [String]) -> String {
-        if !taken.contains("default") { return "default" }
+        // "default" only for the very first one. Suggesting it alongside
+        // others invites the confusion with the AWS profile of that name.
+        if taken.isEmpty { return "default" }
         for index in 2... {
             let candidate = "profile\(index)"
             if !taken.contains(candidate) { return candidate }
@@ -657,6 +662,7 @@ final class SetupWindowController: NSWindowController {
     /// Deploy CloudFormation is pressed.
     @objc private func saveProfile() {
         guard !isRunning, let name = requireProfileName() else { return }
+        beginRun(for: name)
 
         var arguments = [
             "profile", "save",
@@ -689,7 +695,8 @@ final class SetupWindowController: NSWindowController {
     }
 
     @objc private func startInstall() {
-        guard !isRunning, requireProfileName() != nil else { return }
+        guard !isRunning, let profileName = requireProfileName() else { return }
+        beginRun(for: profileName)
 
         // Caught here rather than by CloudFormation five minutes in. The engine
         // validates the same thing; this only saves the round trip.
@@ -715,7 +722,7 @@ final class SetupWindowController: NSWindowController {
         var arguments = [
             "install", "--json", "--non-interactive",
             "--settings", settingsPath,
-            "--vpn-profile", trimmed(vpnProfileField, or: "default"),
+            "--vpn-profile", profileName,
             "--domain", domain,
             "--port", portField.stringValue,
             "--health-path", healthPathField.stringValue,
@@ -794,7 +801,6 @@ final class SetupWindowController: NSWindowController {
         var arguments = [
             "install", "--json", "--non-interactive", "--stage", "finish",
             "--settings", settingsPath, "--login-item",
-            "--vpn-profile", trimmed(vpnProfileField, or: "default"),
         ]
         if superviseCheckbox.state == .on {
             arguments += ["--supervise"]

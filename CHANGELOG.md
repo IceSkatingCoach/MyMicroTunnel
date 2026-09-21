@@ -7,6 +7,17 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.1
+
+- Fixed, for good, the phantom "default" VPN profile. The install runs in
+  stages that hand each other a file; the stage that applies it fell back to
+  built-in defaults when the file was missing, inventing a profile called
+  "default" on whatever interface was free and then reporting errors about a
+  profile nobody had created. It refuses now, and setup keeps one settings
+  path for the whole run instead of recomputing it per stage.
+- The suggested name for a new VPN profile is only "default" when it is the
+  first one, so the word stops colliding with the AWS profile of that name.
+
 ## 1.5.0
 
 - Two different things were both called "profile", and leaving the VPN
