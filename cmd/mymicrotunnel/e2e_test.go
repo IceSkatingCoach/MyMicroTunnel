@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/IceSkatingCoach/MyMicroTunnel/internal/setup"
 )
 
 // End-to-end over the command itself: the binary is built and run, with a
@@ -34,6 +36,16 @@ func build(t *testing.T) string {
 func home(t *testing.T) string {
 	t.Helper()
 	return t.TempDir()
+}
+
+// profilesDir is where the binary, run with HOME=store, keeps its profiles.
+// Asked of setup rather than spelled out, because the answer is per platform:
+// a hardcoded macOS path made these checks fail on Linux, or pass there for
+// no reason at all by looking at a directory that could never exist.
+func profilesDir(t *testing.T, store string) string {
+	t.Helper()
+	t.Setenv("HOME", store)
+	return setup.ProfilesDir()
 }
 
 func run(t *testing.T, binary, home string, args ...string) (string, int) {
@@ -209,8 +221,7 @@ func TestAnApplyingStageRefusesAMissingSettingsFile(t *testing.T) {
 		t.Errorf("the refusal does not explain itself:\n%s", output)
 	}
 	// And nothing was created behind it.
-	if entries, err := os.ReadDir(filepath.Join(store, "Library", "Application Support",
-		"MyMicroTunnel", "profiles")); err == nil && len(entries) > 0 {
+	if entries, err := os.ReadDir(profilesDir(t, store)); err == nil && len(entries) > 0 {
 		t.Errorf("a profile was invented anyway: %v", entries)
 	}
 }
@@ -269,8 +280,7 @@ func TestAnApplyingStageRefusesAnotherProfilesSettings(t *testing.T) {
 		"--vpn-profile", "other", "--domain", "other.example.com"); code != 0 {
 		t.Fatalf("saving: %s", output)
 	}
-	staged := filepath.Join(store, "Library", "Application Support", "MyMicroTunnel",
-		"profiles", "other", "settings.json")
+	staged := filepath.Join(profilesDir(t, store), "other", "settings.json")
 
 	output, code := run(t, binary, store, "install", "--stage", "root",
 		"--non-interactive", "--vpn-profile", "lab", "--settings", staged)
@@ -293,8 +303,7 @@ func TestAStagedFileNamesItsOwnProfileWhenNobodyElseDoes(t *testing.T) {
 		"--vpn-profile", "lab", "--domain", "lab.example.com"); code != 0 {
 		t.Fatalf("saving: %s", output)
 	}
-	staged := filepath.Join(store, "Library", "Application Support", "MyMicroTunnel",
-		"profiles", "lab", "settings.json")
+	staged := filepath.Join(profilesDir(t, store), "lab", "settings.json")
 
 	// No --vpn-profile: the file decides. It gets far enough to attempt the
 	// privileged work, which is as far as a test without root can go — the
