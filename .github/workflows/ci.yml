@@ -59,6 +59,89 @@ jobs:
           ./build/mymicrotunnel version
           ./build/mymicrotunnel --help
 
+  linux:
+    name: Linux
+    # The _linux files are invisible to the macOS jobs above: a Linux build
+    # that stops compiling, or a tunnel that stops coming up, would otherwise
+    # ship without anything noticing. x86_64 here also covers the amd64 half
+    # of the bundle.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      - name: Build the Debian bundle
+        run: |
+          make bundle-debian
+          ( cd build && sha256sum -c mymicrotunnel-debian13-*.tar.gz.sha256 )
+          file build/mymicrotunnel-debian13-*/bin/mymicrotunnel-linux-amd64 | grep -q x86-64
+          file build/mymicrotunnel-debian13-*/bin/mymicrotunnel-linux-arm64 | grep -q aarch64
+
+      - name: Install on Debian 13 and carry traffic through the tunnel
+        # A real kernel WireGuard tunnel, from the installed binary to a peer in
+        # another network namespace. Privileged because creating interfaces
+        # and namespaces needs it; the module is the runner's own kernel's.
+        # The systemd supervisor is not exercised: the container has no init.
+        run: |
+          sudo modprobe wireguard
+          docker run --rm --privileged -v "$PWD/build:/dist:ro" debian:trixie bash -euo pipefail -c '
+            H=/usr/libexec/mymicrotunnel/mymicrotunnel
+            cd /root && tar xzf /dist/mymicrotunnel-debian13-*.tar.gz && cd mymicrotunnel-debian13-*
+            ./install.sh
+            mymicrotunnel version
+
+            ip netns add gw
+            ip link add veth-h type veth peer name veth-g
+            ip link set veth-g netns gw
+            ip addr add 192.168.77.1/24 dev veth-h && ip link set veth-h up
+            ip -n gw addr add 192.168.77.2/24 dev veth-g && ip -n gw link set veth-g up
+
+            umask 077 && mkdir -p /etc/wireguard
+            wg genkey > /etc/wireguard/wg0.key && wg genkey > /root/gw.key
+            printf "%s\n" "[Interface]" "Address = 10.100.0.2/32" "MTU = 1380" \
+              "PostUp = wg set %i private-key /etc/wireguard/wg0.key" "" "[Peer]" \
+              "PublicKey = $(wg pubkey < /root/gw.key)" "AllowedIPs = 10.100.0.0/24" \
+              "Endpoint = 192.168.77.2:51820" "PersistentKeepalive = 25" > /etc/wireguard/wg0.conf
+
+            ip -n gw link add wg-gw type wireguard
+            ip netns exec gw wg set wg-gw private-key /root/gw.key listen-port 51820 \
+              peer "$(wg pubkey < /etc/wireguard/wg0.key)" allowed-ips 10.100.0.2/32
+            ip -n gw addr add 10.100.0.1/32 dev wg-gw && ip -n gw link set wg-gw up
+            ip -n gw route add 10.100.0.2/32 dev wg-gw
+
+            $H tunnel up wg0
+            $H tunnel up wg0
+
+            # The first handshake is started by the first packet and is
+            # retried every five seconds, so the first pings can be lost.
+            for i in $(seq 1 30); do
+              ping -c 1 -W 1 10.100.0.1 >/dev/null 2>&1 && { echo "handshake after ${i}s"; break; }
+            done
+            if ! ping -c 3 -W 3 10.100.0.1; then
+              wg show wg0; ip netns exec gw wg show wg-gw
+              ip route; ip -n gw route
+              exit 1
+            fi
+            $H tunnel status wg0 | tee /dev/stderr | grep -q "last handshake [0-9]"
+
+            $H tunnel down wg0
+            if ip link show wg0 2>/dev/null; then echo "wg0 survived tunnel down" >&2; exit 1; fi
+            $H tunnel down wg0
+
+            ./install.sh --uninstall
+            test ! -e $H
+          '
+
   app:
     name: Menu bar app
     runs-on: macos-14

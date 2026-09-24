@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"os/exec"
+	"os/user"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
@@ -99,8 +101,8 @@ func diagnoseMachine(report *Report) {
 	report.section("this machine")
 	report.field("tool version", "%s", version.String())
 
-	if product := sys.Run("/usr/bin/sw_vers", "-productVersion"); product.OK() {
-		report.field("macOS", "%s", product.Output)
+	if name, release := operatingSystem(); release != "" {
+		report.field(name, "%s", release)
 	}
 	if arch := sys.Run("/usr/bin/uname", "-m"); arch.OK() {
 		report.field("architecture", "%s", arch.Output)
@@ -140,12 +142,7 @@ func diagnoseProfiles(report *Report, current string) {
 func diagnoseInstall(report *Report, config appConfig, settings Settings) {
 	report.section("what is installed")
 
-	for _, path := range []string{
-		InstalledAppPath,
-		CommandPath,
-		HelperPath,
-		EmbeddedEngineDir + "/wireguard-go",
-	} {
+	for _, path := range installedPaths() {
 		info, err := os.Stat(path)
 		if err != nil {
 			report.field(shortName(path), "MISSING")
@@ -210,6 +207,12 @@ func diagnoseTunnel(report *Report, config appConfig) {
 	device := tunnel.Device(config.InterfaceName)
 	present := tunnel.AddressPresent(config.ClientAddress)
 
+	// Visible but unreadable without root, which is how Linux presents it.
+	status, err := tunnel.Report(config.InterfaceName)
+	if device != "" && err != nil && os.Geteuid() != 0 {
+		device = ""
+	}
+
 	switch {
 	case device != "":
 		report.field("state", "up on %s", device)
@@ -222,8 +225,6 @@ func diagnoseTunnel(report *Report, config appConfig) {
 	if device == "" {
 		return
 	}
-
-	status, err := tunnel.Report(config.InterfaceName)
 	if err != nil {
 		report.field("handshake", "could not read: %v", err)
 		return
@@ -392,22 +393,16 @@ func diagnoseLocalNetworks(report *Report, config appConfig) {
 func diagnoseSupervisor(report *Report, profileName string) {
 	report.section("supervisor")
 
-	if !sys.Exists(SupervisorPlistPath) {
+	if !sys.Exists(SupervisorPath) {
 		report.field("installed", "no")
 		return
 	}
-	report.field("installed", "%s", SupervisorPlistPath)
+	report.field("installed", "%s", SupervisorPath)
 
-	state := sys.Run("/bin/launchctl", "print", "system/"+SupervisorLabel)
-	if !state.OK() {
+	if state := supervisorState(); state == "" {
 		report.field("loaded", "no")
 	} else {
-		for _, line := range strings.Split(state.Output, "\n") {
-			if strings.Contains(line, "state =") {
-				report.field("state", "%s", strings.TrimSpace(line))
-				break
-			}
-		}
+		report.field("state", "%s", state)
 	}
 
 	if content, err := os.ReadFile(DesiredStatePathFor(profileName)); err == nil {
@@ -418,9 +413,9 @@ func diagnoseSupervisor(report *Report, profileName string) {
 
 	// The last few lines are usually the whole story: the supervisor narrates
 	// every decision it makes.
-	if log := sys.Run("/usr/bin/tail", "-n", "12", SupervisorLogPath); log.OK() && log.Output != "" {
+	if log := supervisorLog(12); log != "" {
 		report.addf("  last log lines:")
-		for _, line := range strings.Split(log.Output, "\n") {
+		for _, line := range strings.Split(log, "\n") {
 			report.addf("    %s", line)
 		}
 	}
@@ -433,21 +428,25 @@ func shortName(path string) string {
 	return parts[len(parts)-1]
 }
 
+// owner reads the file's uid and gid directly rather than through stat(1),
+// whose flags differ between macOS and Linux.
 func owner(path string) string {
-	result := sys.Run("/usr/bin/stat", "-f%Su:%Sg", path)
-	if !result.OK() {
+	info, err := os.Stat(path)
+	if err != nil {
 		return "unknown"
 	}
-	return result.Output
-}
-
-func appVersionOf(bundle string) string {
-	output, err := exec.Command("/usr/libexec/PlistBuddy",
-		"-c", "Print :CFBundleShortVersionString", bundle+"/Contents/Info.plist").Output()
-	if err != nil {
-		return ""
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "unknown"
 	}
-	return strings.TrimSpace(string(output))
+	uid, gid := strconv.Itoa(int(stat.Uid)), strconv.Itoa(int(stat.Gid))
+	if found, err := user.LookupId(uid); err == nil {
+		uid = found.Username
+	}
+	if found, err := user.LookupGroupId(gid); err == nil {
+		gid = found.Name
+	}
+	return uid + ":" + gid
 }
 
 func sudoersState() string {

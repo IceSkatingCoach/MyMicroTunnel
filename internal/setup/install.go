@@ -29,24 +29,6 @@ type Options struct {
 	SettingsPath string
 }
 
-// Prerequisites checks that the one native thing this product needs is present.
-//
-// It used to install wireguard-tools through Homebrew, which meant a customer
-// without Homebrew had to run an installer before running the installer, and a
-// customer with it ended up trusting a root-capable binary in a directory their
-// own account could write to. The package now carries wireguard-go itself, so
-// there is nothing to fetch and nothing to trust that did not arrive signed.
-func Prerequisites(interactive bool) string {
-	ui.Step("Checking prerequisites")
-
-	engine, err := tunnel.Engine("")
-	if err != nil {
-		ui.Fail("%v", err)
-	}
-	ui.Done("wireguard-go at %s", engine)
-	return engine
-}
-
 // EnsureClientKey generates the private key on this machine and returns only
 // the public half. The private key never leaves the machine and is never a
 // CloudFormation parameter.
@@ -506,19 +488,15 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 		return nil
 	}
 	if !asRoot {
-		// The interactive path has no way to write into /Library/LaunchDaemons
+		// The interactive path has no way to write the daemon's definition
 		// without another sudo, and doing it here keeps the number of password
 		// prompts at the one the user has already answered.
 		if err := sys.WriteAsRoot(
-			SupervisorPlist(SupervisorExecutable, ProfilesDir()),
-			SupervisorPlistPath, "0644"); err != nil {
+			SupervisorDefinition(SupervisorExecutable, ProfilesDir()),
+			SupervisorPath, "0644"); err != nil {
 			return err
 		}
-		sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootout", "system/"+SupervisorLabel)
-		if sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootstrap", "system", SupervisorPlistPath) != 0 {
-			return fmt.Errorf("launchctl refused the supervisor")
-		}
-		return nil
+		return loadSupervisor(false)
 	}
 	return InstallSupervisor(ProfilesDir())
 }
@@ -546,84 +524,6 @@ func AnySupervised(profiles []Settings) bool {
 		}
 	}
 	return false
-}
-
-// InstallApp is a no-op when the package already placed the app; it only builds
-// when running from a source checkout.
-func InstallApp(repoRoot string) {
-	// An empty root means this is the installed copy rather than one running
-	// from a checkout. Joining "" with "menubar" produces a *relative* path,
-	// which resolves against whatever directory the command happened to be run
-	// from — so running /usr/local/bin/mymicrotunnel while sitting in a
-	// checkout made it try to rebuild the app and copy it over the signed
-	// bundle the package had just installed.
-	menubarDir := ""
-	if repoRoot != "" {
-		menubarDir = filepath.Join(repoRoot, "menubar")
-	}
-	if menubarDir == "" || !sys.Exists(menubarDir) {
-		ui.Step("Menu bar app")
-		if sys.Exists(InstalledAppPath) {
-			ui.Done("Already installed at %s", InstalledAppPath)
-			return
-		}
-		// Running from inside a bundle that is not in /Applications yet: the
-		// app can install itself rather than declaring the situation hopeless.
-		if bundle := enclosingBundle(); bundle != "" {
-			if result := sys.Run("cp", "-R", bundle, "/Applications/"); result.OK() {
-				ui.Done("Copied %s to %s", bundle, InstalledAppPath)
-				return
-			}
-		}
-		ui.Fail("%s is missing and there are no sources to build it from.", InstalledAppPath)
-	}
-
-	// Never as root. The privileged stage runs from the same checkout, and a
-	// build it performs leaves root-owned objects under menubar/build that
-	// the developer who owns the tree cannot delete or overwrite — every
-	// later build then fails on "File exists" from lipo, with nothing saying
-	// why. Observed exactly that way.
-	if os.Geteuid() == 0 {
-		if sys.Exists(filepath.Join(menubarDir, "build", "MyMicroTunnel.app")) {
-			ui.Step("Menu bar app")
-			if result := sys.Run("cp", "-R",
-				filepath.Join(menubarDir, "build", "MyMicroTunnel.app"), "/Applications/"); result.OK() {
-				ui.Done("%s", InstalledAppPath)
-				return
-			}
-		}
-		ui.Warn("Not building the app as root; run `make -C menubar install` as yourself.")
-		return
-	}
-
-	ui.Step("Building the menu bar app")
-	if sys.RunInteractive("make", "-C", menubarDir, "app") != 0 {
-		ui.Fail("The app did not build.")
-	}
-
-	sys.Run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
-	os.RemoveAll(InstalledAppPath)
-	if result := sys.Run("cp", "-R", filepath.Join(menubarDir, "build", "MyMicroTunnel.app"), "/Applications/"); !result.OK() {
-		ui.Fail("Could not copy the app into /Applications: %s", result.Output)
-	}
-	ui.Done("%s", InstalledAppPath)
-}
-
-func RegisterLoginItem() {
-	// Opening at login only puts the switch in the menu bar; it does not raise
-	// the tunnel, which stays a deliberate act. When the supervisor is
-	// installed, the tunnel's state at boot comes from the desired-state file
-	// instead, which is the user's own last decision rather than a default.
-	sys.Run("osascript", "-e",
-		`tell application "System Events" to delete (every login item whose name is "MyMicroTunnel")`)
-	result := sys.Run("osascript", "-e",
-		`tell application "System Events" to make login item at end with properties {path:"`+InstalledAppPath+`", hidden:true}`)
-	if !result.OK() {
-		ui.Warn("Could not register the login item: %s", result.Output)
-		ui.Info("Add it under System Settings › General › Login Items.")
-		return
-	}
-	ui.Done("Registered")
 }
 
 // Verify proves the path rather than assuming it. Every hop is checked in the
@@ -667,7 +567,7 @@ func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 	// identical in a single attempt.
 	var reachable bool
 	for attempt := 0; attempt < 6; attempt++ {
-		if sys.Run("/sbin/ping", "-c", "2", "-t", "5", s.GatewayAddress).OK() {
+		if sys.Run("ping", pingArgs(s.GatewayAddress)...).OK() {
 			reachable = true
 			break
 		}
@@ -726,10 +626,8 @@ func CurrentUsername() string {
 
 	// Running as root with no SUDO_USER: ask who owns the login session.
 	if os.Geteuid() == 0 {
-		if console := sys.Run("/usr/bin/stat", "-f%Su", "/dev/console"); console.OK() {
-			if name := strings.TrimSpace(console.Output); name != "" && name != "root" {
-				return name
-			}
+		if name := consoleUser(); name != "" && name != "root" {
+			return name
 		}
 	}
 
@@ -759,27 +657,6 @@ func RepoRoot() string {
 			return directory
 		}
 		directory = filepath.Dir(directory)
-	}
-	return ""
-}
-
-// enclosingBundle returns the .app this binary is running inside, or "" when it
-// is a plain command-line build.
-func enclosingBundle() string {
-	executable, err := os.Executable()
-	if err != nil {
-		return ""
-	}
-	directory := filepath.Dir(executable)
-	for attempt := 0; attempt < 4; attempt++ {
-		if strings.HasSuffix(directory, ".app") {
-			return directory
-		}
-		parent := filepath.Dir(directory)
-		if parent == directory {
-			break
-		}
-		directory = parent
 	}
 	return ""
 }

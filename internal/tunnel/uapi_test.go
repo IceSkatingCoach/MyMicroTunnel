@@ -228,7 +228,7 @@ func TestParseStatusAssignsFieldsToTheRightPeer(t *testing.T) {
 // was then refused by the collision check, correctly and uselessly, against
 // the first profile's own interface.
 func TestTheTunnelClaimsOneAddressNotTheWholeClassA(t *testing.T) {
-	source, err := os.ReadFile("tunnel.go")
+	source, err := os.ReadFile("tunnel_darwin.go")
 	if err != nil {
 		t.Fatal(err)
 	}

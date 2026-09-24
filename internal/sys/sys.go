@@ -94,7 +94,7 @@ func WriteAsRoot(content, destination, mode string) error {
 		return err
 	}
 
-	if code := RunInteractive("/usr/bin/sudo", "install", "-m", mode, "-o", "root", "-g", "wheel", staged, destination); code != 0 {
+	if code := RunInteractive("/usr/bin/sudo", "install", "-m", mode, "-o", "0", "-g", "0", staged, destination); code != 0 {
 		return fmt.Errorf("sudo install to %s exited %d", destination, code)
 	}
 	return nil

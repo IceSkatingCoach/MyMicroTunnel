@@ -72,11 +72,7 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 	withdrawFromDeployment(ctx, options, config)
 
 	if len(remaining) == 0 && !options.KeepApp {
-		sys.Run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
-		sys.Run("osascript", "-e",
-			`tell application "System Events" to delete (every login item whose name is "MyMicroTunnel")`)
-		os.RemoveAll(InstalledAppPath)
-		ui.Done("App and login item removed")
+		removeApp()
 	} else if len(remaining) > 0 {
 		ui.Info("Keeping the app: %d other profile(s) still use it", len(remaining))
 	}
@@ -105,7 +101,7 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 				if err := awsops.ForgetAppCredentials(settings.AccountID); err != nil {
 					ui.Warn("Could not remove the stored credentials: %v", err)
 				} else {
-					ui.Done("Application AWS credentials removed from the Keychain")
+					ui.Done("Application AWS credentials removed from the %s", awsops.CredentialStore)
 				}
 			}
 		}

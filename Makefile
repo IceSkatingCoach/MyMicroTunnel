@@ -214,8 +214,30 @@ lint-template:
 		&& cfn-lint infra/cloudformation-microtunnel.yaml infra/cloudformation-updates.yaml \
 		|| echo "cfn-lint is not installed; skipping (pip install cfn-lint)"
 
+# The Debian 13 bundle: the command for amd64 and arm64, and an install
+# script. No app and no wireguard-go: Linux has WireGuard in the kernel.
+#
+#   make bundle-debian
+BUNDLE_NAME := mymicrotunnel-debian13-$(VERSION)
+BUNDLE_DIR  := build/$(BUNDLE_NAME)
+# macOS's bsdtar otherwise records Finder metadata that GNU tar warns about on
+# extraction. GNU tar has no such flag and refuses it.
+BUNDLE_TAR  := $(if $(filter Darwin,$(shell uname -s)),COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata,tar)
+
+bundle-debian:
+	rm -rf $(BUNDLE_DIR) && mkdir -p $(BUNDLE_DIR)/bin
+	for arch in amd64 arm64; do \
+	  CGO_ENABLED=0 GOOS=linux GOARCH=$$arch go build -trimpath -ldflags "$(LDFLAGS)" \
+	    -o $(BUNDLE_DIR)/bin/mymicrotunnel-linux-$$arch ./cmd/mymicrotunnel || exit 1; \
+	done
+	cp packaging/debian/install.sh packaging/debian/README.md LICENSE VERSION $(BUNDLE_DIR)/
+	chmod 0755 $(BUNDLE_DIR)/install.sh
+	$(BUNDLE_TAR) -C build -czf build/$(BUNDLE_NAME).tar.gz $(BUNDLE_NAME)
+	cd build && { sha256sum $(BUNDLE_NAME).tar.gz 2>/dev/null || shasum -a 256 $(BUNDLE_NAME).tar.gz; } > $(BUNDLE_NAME).tar.gz.sha256
+	@echo "built build/$(BUNDLE_NAME).tar.gz"
+
 clean:
 	$(MAKE) -C menubar clean
 	rm -rf build
 
-.PHONY: install uninstall wireguard sparkle sparkle-keys appcast appcast-validate rollback feed-setup site-setup site-publish publish release engine app pkg pkg-notarized test check lint-template clean
+.PHONY: install uninstall bundle-debian wireguard sparkle sparkle-keys appcast appcast-validate rollback feed-setup site-setup site-publish publish release engine app pkg pkg-notarized test check lint-template clean
