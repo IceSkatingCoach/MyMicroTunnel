@@ -220,6 +220,9 @@ lint-template:
 #   make bundle-debian
 BUNDLE_NAME := mymicrotunnel-debian13-$(VERSION)
 BUNDLE_DIR  := build/$(BUNDLE_NAME)
+# macOS's bsdtar otherwise records Finder metadata that GNU tar warns about on
+# extraction. GNU tar has no such flag and refuses it.
+BUNDLE_TAR  := $(if $(filter Darwin,$(shell uname -s)),COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata,tar)
 
 bundle-debian:
 	rm -rf $(BUNDLE_DIR) && mkdir -p $(BUNDLE_DIR)/bin
@@ -229,8 +232,8 @@ bundle-debian:
 	done
 	cp packaging/debian/install.sh packaging/debian/README.md LICENSE VERSION $(BUNDLE_DIR)/
 	chmod 0755 $(BUNDLE_DIR)/install.sh
-	COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -C build -czf build/$(BUNDLE_NAME).tar.gz $(BUNDLE_NAME)
-	cd build && shasum -a 256 $(BUNDLE_NAME).tar.gz > $(BUNDLE_NAME).tar.gz.sha256
+	$(BUNDLE_TAR) -C build -czf build/$(BUNDLE_NAME).tar.gz $(BUNDLE_NAME)
+	cd build && { sha256sum $(BUNDLE_NAME).tar.gz 2>/dev/null || shasum -a 256 $(BUNDLE_NAME).tar.gz; } > $(BUNDLE_NAME).tar.gz.sha256
 	@echo "built build/$(BUNDLE_NAME).tar.gz"
 
 clean:

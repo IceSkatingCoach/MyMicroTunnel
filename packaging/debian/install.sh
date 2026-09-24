@@ -57,7 +57,7 @@ if [[ $UNINSTALL -eq 1 ]]; then
   fi
   systemctl disable --now mymicrotunnel-supervisor.service 2>/dev/null || true
   rm -f /etc/systemd/system/mymicrotunnel-supervisor.service /etc/sudoers.d/mymicrotunnel
-  systemctl daemon-reload
+  systemctl daemon-reload 2>/dev/null || true
   rm -f "$COMMAND"
   rm -rf "$(dirname "$HELPER")" "$DOC_DIR"
   log "removed the command, helper, supervisor and sudoers rule"
