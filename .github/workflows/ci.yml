@@ -121,7 +121,17 @@ jobs:
 
             $H tunnel up wg0
             $H tunnel up wg0
-            ping -c 3 -W 3 10.100.0.1
+
+            # The first handshake is started by the first packet and is
+            # retried every five seconds, so the first pings can be lost.
+            for i in $(seq 1 30); do
+              ping -c 1 -W 1 10.100.0.1 >/dev/null 2>&1 && { echo "handshake after ${i}s"; break; }
+            done
+            if ! ping -c 3 -W 3 10.100.0.1; then
+              wg show wg0; ip netns exec gw wg show wg-gw
+              ip route; ip -n gw route
+              exit 1
+            fi
             $H tunnel status wg0 | tee /dev/stderr | grep -q "last handshake [0-9]"
 
             $H tunnel down wg0
