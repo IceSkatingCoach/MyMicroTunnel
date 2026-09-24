@@ -7,6 +7,19 @@ what changed and whether it matters, not which functions moved.
 The format is one `## <version>` heading per release, newest first.
 `make appcast` reads the section matching `VERSION` and embeds it in the feed.
 
+## 1.5.9
+
+- The option to keep the tunnel as you left it across restarts and sleep
+  now works. In earlier versions the background service that does this
+  looked for your VPN profiles in the wrong place, found none, and did
+  nothing, so after a restart the tunnel stayed down until you switched it
+  on again. If you turned this option on during setup, it starts working
+  when you update. Nothing else needs to change.
+- Runs on Linux. A Debian 13 bundle with an install script is at
+  https://downloads.maragato.ca/linux/. Linux has no menu bar, so you raise
+  and drop the tunnel from the command line; everything else works as it
+  does on a Mac.
+
 ## 1.5.8
 
 - Installable with Homebrew: `brew tap IceSkatingCoach/mymicrotunnel` then
