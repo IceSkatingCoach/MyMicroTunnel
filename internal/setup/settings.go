@@ -33,19 +33,6 @@ const (
 	// CommandPath is the copy on the path, for people.
 	CommandPath = "/usr/local/bin/mymicrotunnel"
 
-	// HelperPath is the copy the sudoers rule names, and it is deliberately not
-	// the one above.
-	//
-	// A NOPASSWD rule is only as trustworthy as the file it points at. The
-	// first version of this product pointed at /opt/homebrew/bin/wg-quick,
-	// which Homebrew installs into a directory owned by the user and group
-	// admin, mode 775 — so the very user the rule names could replace that file
-	// and become root without a password. Homebrew on Intel does the same to
-	// /usr/local. /Library/PrivilegedHelperTools is root:wheel, is the location
-	// Apple documents for exactly this, and is not somewhere a package manager
-	// takes ownership of.
-	HelperPath = "/Library/PrivilegedHelperTools/ca.maragato.mymicrotunnel.helper"
-
 	// EmbeddedEngineDir holds the copy of wireguard-go the package ships, so a
 	// customer needs neither Homebrew nor a second installer.
 	EmbeddedEngineDir = "/usr/local/lib/mymicrotunnel"

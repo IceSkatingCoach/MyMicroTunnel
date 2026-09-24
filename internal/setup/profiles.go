@@ -36,15 +36,15 @@ import (
 
 const DefaultProfileName = "default"
 
-func AppConfigDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, "Library", "Application Support", "MyMicroTunnel")
-}
+// profilesDirOverride is the store the supervisor was pointed at. The daemon
+// runs as root, whose home directory is not the owner's, so without this every
+// profile lookup read root's own (empty) store and nothing was ever supervised.
+var profilesDirOverride string
 
 func ProfilesDir() string {
+	if profilesDirOverride != "" {
+		return profilesDirOverride
+	}
 	return filepath.Join(AppConfigDir(), "profiles")
 }
 

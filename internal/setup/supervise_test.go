@@ -3,7 +3,7 @@ package setup
 
 import (
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 )
 
@@ -50,27 +50,6 @@ func TestDesiredStateIgnoresTrailingWhitespace(t *testing.T) {
 	}
 	if !desiredUp(path) {
 		t.Error("a trailing newline was read as a different state")
-	}
-}
-
-// One daemon holds every supervised profile, so the job names the store
-// rather than a single tunnel. A plist naming one interface was why installing
-// a second profile left the first one unsupervised.
-func TestSupervisorPlistWatchesTheWholeProfileStore(t *testing.T) {
-	plist := SupervisorPlist(HelperPath, "/tmp/profiles")
-
-	for _, expected := range []string{
-		"<string>" + SupervisorLabel + "</string>",
-		"<string>" + HelperPath + "</string>",
-		"<string>supervise</string>",
-		"<string>--profiles</string>",
-		"<string>/tmp/profiles</string>",
-		"<key>RunAtLoad</key>",
-		"<key>KeepAlive</key>",
-	} {
-		if !strings.Contains(plist, expected) {
-			t.Errorf("the plist has no %q:\n%s", expected, plist)
-		}
 	}
 }
 
@@ -123,5 +102,31 @@ func writeProfileForTest(t *testing.T, s Settings) {
 	}
 	if err := SaveProfileSettings(s); err != nil {
 		t.Fatalf("writing the settings for %s: %v", s.ProfileName, err)
+	}
+}
+
+// The daemon is root and its home is not the owner's. Before this, --profiles
+// was logged and then ignored: every lookup resolved root's own empty store,
+// and no tunnel was ever supervised.
+func TestSupervisorReadsTheStoreItWasGivenNotRootsHome(t *testing.T) {
+	owner := t.TempDir()
+	t.Setenv("HOME", owner)
+	if err := SaveProfileSettings(Settings{ProfileName: "work", InterfaceName: "wg3", Supervise: true}); err != nil {
+		t.Fatal(err)
+	}
+	store := ProfilesDir()
+
+	t.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { profilesDirOverride = "" })
+	targets := superviseTargets(SuperviseOptions{ProfilesDir: store})
+	if len(targets) != 0 {
+		t.Fatalf("resolved %d targets before the store was applied; the test is not isolating HOME", len(targets))
+	}
+
+	Supervise(SuperviseOptions{ProfilesDir: store, Once: true})
+	targets = superviseTargets(SuperviseOptions{ProfilesDir: store})
+	if len(targets) != 1 || targets[0].interfaceName != "wg3" ||
+		targets[0].statePath != filepath.Join(store, "work", "desired-state") {
+		t.Fatalf("the supervisor did not read the store it was given: %+v", targets)
 	}
 }

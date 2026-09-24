@@ -419,7 +419,7 @@ func runInstall(args []string) {
 
 	setup.InstallApp(setup.RepoRoot())
 
-	if *loginItem || (interactive && !*asJSON && ui.Confirm("Open the app automatically at login?", true)) {
+	if setup.HasApp && (*loginItem || (interactive && !*asJSON && ui.Confirm("Open the app automatically at login?", true))) {
 		ui.Step("Login item")
 		setup.RegisterLoginItem()
 	}
@@ -427,11 +427,16 @@ func runInstall(args []string) {
 	client := resolveClient(ctx, &settings, false, *accessKeyID, *secretAccessKey)
 	setup.Verify(ctx, client, settings)
 
-	sys.Run("/usr/bin/open", setup.InstalledAppPath)
+	setup.OpenApp()
 
 	if !*asJSON {
 		fmt.Println("\n✓ Installed.")
-		fmt.Printf("  The padlock shield in the menu bar toggles %s.\n", settings.DomainName)
+		if setup.HasApp {
+			fmt.Printf("  The padlock shield in the menu bar toggles %s.\n", settings.DomainName)
+		} else {
+			fmt.Printf("  sudo %s tunnel up|down %s toggles %s.\n",
+				setup.HelperPath, settings.InterfaceName, settings.DomainName)
+		}
 	}
 	ui.Done("Installed")
 }
@@ -1207,6 +1212,14 @@ func runTunnel(args []string) {
 // is how somebody ends up debugging a tunnel that was working all along.
 func reportTunnel(interfaceName, address string) {
 	device := tunnel.Device(interfaceName)
+
+	// On Linux the interface is visible to everyone, but asking it anything
+	// needs root; on macOS the device itself is hidden. Either way an
+	// unprivileged caller can know the tunnel is up and no more.
+	status, err := tunnel.Report(interfaceName)
+	if device != "" && err != nil && os.Geteuid() != 0 {
+		device = ""
+	}
 	if device == "" {
 		if tunnel.AddressPresent(address) {
 			fmt.Printf("%s is up (%s), but reading its handshake needs root:\n", interfaceName, address)
@@ -1216,8 +1229,6 @@ func reportTunnel(interfaceName, address string) {
 		fmt.Printf("%s is down\n", interfaceName)
 		return
 	}
-
-	status, err := tunnel.Report(interfaceName)
 	if err != nil {
 		ui.Fail("%v", err)
 	}

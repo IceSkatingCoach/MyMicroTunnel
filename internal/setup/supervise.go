@@ -28,10 +28,6 @@ import (
 // with the switch off comes back with it down.
 
 const (
-	SupervisorLabel     = "ca.maragato.mymicrotunnel.supervisor"
-	SupervisorPlistPath = "/Library/LaunchDaemons/" + SupervisorLabel + ".plist"
-	SupervisorLogPath   = "/var/log/mymicrotunnel-supervisor.log"
-
 	// A handshake older than this means the far end has stopped answering.
 	// PersistentKeepalive is 25s, so three minutes is many missed chances
 	// rather than one unlucky moment.
@@ -90,11 +86,12 @@ type SuperviseOptions struct {
 	WakeUser string
 }
 
-// Supervise is the body of the LaunchDaemon. It reconciles once per interval
-// and never exits, because launchd restarting it is the recovery path for a
+// Supervise is the body of the daemon. It reconciles once per interval and
+// never exits, because launchd or systemd restarting it is the recovery path for a
 // crash rather than something to paper over here.
 func Supervise(options SuperviseOptions) {
 	if options.ProfilesDir != "" {
+		profilesDirOverride = options.ProfilesDir
 		logf("supervisor started for every profile under %s", options.ProfilesDir)
 	} else {
 		logf("supervisor started for %s, watching %s", options.InterfaceName, options.StatePath)
@@ -381,47 +378,14 @@ func logf(format string, args ...any) {
 
 // --- installing it ---------------------------------------------------------
 
-// SupervisorPlist is the launchd job. The profile store's path is baked in as
-// an argument because the daemon runs as root and has no way to work out which
-// of the machine's users owns the deployments.
-func SupervisorPlist(executable, profilesDir string) string {
-	return strings.Join([]string{
-		`<?xml version="1.0" encoding="UTF-8"?>`,
-		`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">`,
-		`<plist version="1.0">`,
-		`<dict>`,
-		`  <key>Label</key>`,
-		`  <string>` + SupervisorLabel + `</string>`,
-		`  <key>ProgramArguments</key>`,
-		`  <array>`,
-		`    <string>` + executable + `</string>`,
-		`    <string>supervise</string>`,
-		`    <string>--profiles</string>`,
-		`    <string>` + profilesDir + `</string>`,
-		`    <string>--wake-user</string>`,
-		`    <string>` + CurrentUsername() + `</string>`,
-		`  </array>`,
-		`  <key>RunAtLoad</key>`,
-		`  <true/>`,
-		`  <key>KeepAlive</key>`,
-		`  <true/>`,
-		`  <key>StandardOutPath</key>`,
-		`  <string>` + SupervisorLogPath + `</string>`,
-		`  <key>StandardErrorPath</key>`,
-		`  <string>` + SupervisorLogPath + `</string>`,
-		`</dict>`,
-		`</plist>`,
-		``,
-	}, "\n")
-}
-
 // SupervisorExecutable is the copy of this binary the daemon runs: the
 // root-owned helper, not the app bundle's copy. A daemon that stops working
 // because somebody dragged an app to the Trash is worse than no daemon, and a
 // root daemon running a user-writable file is worse than both.
 const SupervisorExecutable = HelperPath
 
-// InstallSupervisor writes and loads the LaunchDaemon. Called from the
+// InstallSupervisor writes and loads the daemon: a LaunchDaemon on macOS, a
+// systemd unit on Linux. Called from the
 // privileged stage, which is already root.
 func InstallSupervisor(profilesDir string) error {
 	if profilesDir == "" {
@@ -439,32 +403,23 @@ func InstallSupervisor(profilesDir string) error {
 		executable = running
 	}
 
-	plist := SupervisorPlist(executable, profilesDir)
-	if err := sys.WriteAsRootNonInteractive(plist, SupervisorPlistPath, 0o644); err != nil {
+	definition := SupervisorDefinition(executable, profilesDir)
+	if err := sys.WriteAsRootNonInteractive(definition, SupervisorPath, 0o644); err != nil {
 		return err
 	}
-
-	// Unloaded first: launchd keeps running the old job definition otherwise,
-	// so a changed profile store or a new argument list would not take effect
-	// until the next reboot.
-	sys.Run("/bin/launchctl", "bootout", "system/"+SupervisorLabel)
-	if result := sys.Run("/bin/launchctl", "bootstrap", "system", SupervisorPlistPath); !result.OK() {
-		return fmt.Errorf("launchctl refused the supervisor: %s", result.Output)
-	}
-	return nil
+	return loadSupervisor(true)
 }
 
 // RemoveSupervisor is safe to call when it was never installed.
 func RemoveSupervisor(asRoot bool) {
-	if !sys.Exists(SupervisorPlistPath) {
+	if !sys.Exists(SupervisorPath) {
 		return
 	}
+	unloadSupervisor(asRoot)
 	if asRoot {
-		sys.Run("/bin/launchctl", "bootout", "system/"+SupervisorLabel)
-		os.Remove(SupervisorPlistPath)
+		os.Remove(SupervisorPath)
 	} else {
-		sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootout", "system/"+SupervisorLabel)
-		sys.RunInteractive("/usr/bin/sudo", "rm", "-f", SupervisorPlistPath)
+		sys.RunInteractive("/usr/bin/sudo", "rm", "-f", SupervisorPath)
 	}
 	ui.Done("Supervisor removed")
 }
