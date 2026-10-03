@@ -42,6 +42,13 @@ const (
 		sparkleVersion + "/Sparkle-" + sparkleVersion + ".tar.xz"
 )
 
+// The pin, as variables so the tests can serve an archive from a local server
+// and prove a mismatched one is refused.
+var (
+	archiveURL    = sparkleURL
+	archiveSHA256 = sparkleSHA256
+)
+
 func main() {
 	force := flag.Bool("force", false, "re-download even when it is already present")
 	flag.Parse()
@@ -61,8 +68,8 @@ func main() {
 
 	archive := filepath.Join(work, "sparkle.tar.xz")
 	step("Downloading Sparkle %s", sparkleVersion)
-	download(sparkleURL, archive)
-	verify(archive, sparkleSHA256)
+	download(archiveURL, archive)
+	verify(archive, archiveSHA256)
 	done("checksum matches")
 
 	step("Unpacking")
@@ -133,7 +140,7 @@ func verify(path, expected string) {
 }
 
 func run(directory, name string, args ...string) {
-	command := exec.Command(name, args...)
+	command := execCommand(name, args...)
 	command.Dir = directory
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -163,9 +170,16 @@ func repoRoot() string {
 func step(format string, args ...any) { fmt.Printf("\n▸ "+format+"\n", args...) }
 func done(format string, args ...any) { fmt.Printf("  ✓ "+format+"\n", args...) }
 
+// exit and execCommand are variables so the tests can watch a failure and stand
+// in for the tools without ending the process or touching the machine.
+var (
+	exit        = os.Exit
+	execCommand = exec.Command
+)
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "\n✗ "+format+"\n", args...)
-	os.Exit(1)
+	exit(1)
 }
 
 func must(err error) {

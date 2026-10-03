@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,8 +14,8 @@ import (
 // macOS has no kernel WireGuard, so the tunnel is wireguard-go on a utun
 // device, configured over its UAPI socket and addressed with ifconfig.
 
-func namePath(name string) string     { return filepath.Join(RunDir, name+".name") }
-func socketPath(device string) string { return filepath.Join(RunDir, device+".sock") }
+func namePath(name string) string     { return filepath.Join(runDir, name+".name") }
+func socketPath(device string) string { return filepath.Join(runDir, device+".sock") }
 
 // Device returns the utun the logical interface is currently running on, or ""
 // when it is not up.
@@ -45,8 +44,8 @@ func Up(options Options) error {
 	if options.Name == "" {
 		return errors.New("the tunnel has no name")
 	}
-	if err := os.MkdirAll(RunDir, 0o700); err != nil {
-		return fmt.Errorf("creating %s: %w", RunDir, err)
+	if err := os.MkdirAll(runDir, 0o700); err != nil {
+		return fmt.Errorf("creating %s: %w", runDir, err)
 	}
 
 	device := Device(options.Name)
@@ -150,7 +149,7 @@ func routes(device string, config Config) error {
 			if _, _, err := net.ParseCIDR(allowed); err != nil {
 				return fmt.Errorf("%q is not a network this machine can route to", allowed)
 			}
-			output, err := exec.Command("/sbin/route", "-q", "-n", "add", "-inet", allowed,
+			output, err := execCommand("/sbin/route", "-q", "-n", "add", "-inet", allowed,
 				"-interface", device).CombinedOutput()
 			if err != nil && !strings.Contains(string(output), "File exists") {
 				return fmt.Errorf("routing %s to %s: %w\n%s", allowed, device, err,
@@ -180,7 +179,7 @@ func Down(name string) error {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if exec.Command("/sbin/ifconfig", device).Run() != nil {
+		if execCommand("/sbin/ifconfig", device).Run() != nil {
 			return nil
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -204,7 +203,7 @@ func Report(name string) (Status, error) {
 }
 
 func ifconfig(device string, args ...string) error {
-	output, err := exec.Command("/sbin/ifconfig", append([]string{device}, args...)...).CombinedOutput()
+	output, err := execCommand("/sbin/ifconfig", append([]string{device}, args...)...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ifconfig %s %s: %w\n%s", device, strings.Join(args, " "), err,
 			strings.TrimSpace(string(output)))
@@ -224,7 +223,7 @@ func AddressPresent(address string) bool {
 	if address == "" {
 		return false
 	}
-	output, err := exec.Command("/sbin/ifconfig").CombinedOutput()
+	output, err := execCommand("/sbin/ifconfig").CombinedOutput()
 	if err != nil {
 		return false
 	}

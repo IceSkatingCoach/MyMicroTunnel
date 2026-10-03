@@ -183,14 +183,15 @@ func TestCollectMergesBothPlatformsAndCountsSharedCodeOnce(t *testing.T) {
 	dir := fixtureDir(t, map[string]string{
 		"macos-test.json": goTestJSON, "macos.cover": coverProfile,
 		"linux-test.json": `{"Action":"pass","Package":"` + module + `","Test":"TestLinux"}`, "linux.cover": linuxCover,
-		vulnReport: vulnJSON,
+		"e2e-test.json": `{"Action":"pass","Package":"` + module + `/test/e2e","Test":"TestDeploy"}`,
+		vulnReport:      vulnJSON,
 	})
 	run, err := collect(dir, module, testContext)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := run.Summary
-	if s.Status != "failed" || s.Tests != (Tests{Total: 7, Passed: 4, Failed: 2, Skipped: 1}) {
+	if s.Status != "failed" || s.Tests != (Tests{Total: 8, Passed: 5, Failed: 2, Skipped: 1}) {
 		t.Errorf("summary = %+v", s)
 	}
 	if *s.Coverage["macos"].Lines != 50 || *s.Coverage["linux"].Lines != 76.2 || s.Security.High != 1 || len(run.Files) != 5 {
@@ -203,7 +204,8 @@ func TestCollectMergesBothPlatformsAndCountsSharedCodeOnce(t *testing.T) {
 }
 
 func TestCollectFailsAPlatformThatLeftNoTestReport(t *testing.T) {
-	run, err := collect(fixtureDir(t, map[string]string{"macos-test.json": `{"Action":"pass","Package":"m","Test":"T"}`}), module, testContext)
+	pass := `{"Action":"pass","Package":"m","Test":"T"}`
+	run, err := collect(fixtureDir(t, map[string]string{"macos-test.json": pass, "e2e-test.json": pass}), module, testContext)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +216,7 @@ func TestCollectFailsAPlatformThatLeftNoTestReport(t *testing.T) {
 
 func TestCollectPassesACleanRunAndIgnoresAnUnreadableAudit(t *testing.T) {
 	pass := `{"Action":"pass","Package":"m","Test":"T"}`
-	dir := fixtureDir(t, map[string]string{"macos-test.json": pass, "linux-test.json": pass, vulnReport: "offline"})
+	dir := fixtureDir(t, map[string]string{"macos-test.json": pass, "linux-test.json": pass, "e2e-test.json": pass, vulnReport: "offline"})
 	run, err := collect(dir, module, testContext)
 	if err != nil || run.Summary.Status != "passed" || run.Summary.Security != (Security{}) {
 		t.Errorf("run = %+v, %v", run, err)
@@ -435,7 +437,7 @@ func TestTheCommandCollectsPublishesAndRejectsUnknownCommands(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+module+"\n\ngo 1.27\n"), 0o644)
 	t.Chdir(root)
 	pass := `{"Action":"pass","Package":"` + module + `","Test":"T"}`
-	dir := fixtureDir(t, map[string]string{"macos-test.json": pass, "linux-test.json": pass})
+	dir := fixtureDir(t, map[string]string{"macos-test.json": pass, "linux-test.json": pass, "e2e-test.json": pass})
 	t.Setenv("GITHUB_STEP_SUMMARY", "")
 	t.Setenv("HOWAREWEDOING_BUCKET", "")
 	t.Setenv("GITHUB_HEAD_REF", "")

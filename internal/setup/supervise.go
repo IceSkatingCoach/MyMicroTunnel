@@ -154,13 +154,13 @@ var missingConfigLogged = map[string]bool{}
 
 func reconcileTunnel(target superviseTarget) {
 	wanted := desiredUp(target.statePath)
-	running := tunnel.IsUp(target.interfaceName)
+	running := tunnelIsUp(target.interfaceName)
 
 	// A profile whose configuration is not there cannot be raised, and
 	// trying every fifteen seconds fills the log with one line that never
 	// changes. It happens between deploying a profile and authorising the
 	// privileged step, and after a configuration is removed by hand.
-	if wanted && !sys.Exists(target.configPath) {
+	if wanted && !sys.Exists(onDisk(target.configPath)) {
 		if !missingConfigLogged[target.profileName] {
 			missingConfigLogged[target.profileName] = true
 			logf("%s has no configuration at %s; deploy it from Setup. Not retrying until it appears.",
@@ -179,7 +179,7 @@ func reconcileTunnel(target superviseTarget) {
 
 	case !wanted && running:
 		logf("bringing %s down", target.interfaceName)
-		if err := tunnel.Down(target.interfaceName); err != nil {
+		if err := tunnelDown(target.interfaceName); err != nil {
 			logf("could not drop %s: %v", target.interfaceName, err)
 		}
 
@@ -196,7 +196,7 @@ func reconcileTunnel(target superviseTarget) {
 		wakeGateway(target)
 
 		logf("no handshake on %s for %s; re-pinning", target.interfaceName, staleHandshake)
-		if err := tunnel.Down(target.interfaceName); err != nil {
+		if err := tunnelDown(target.interfaceName); err != nil {
 			logf("could not drop %s before re-pinning: %v", target.interfaceName, err)
 			return
 		}
@@ -219,7 +219,7 @@ func wakeGateway(target superviseTarget) {
 	}
 
 	executable := SupervisorExecutable
-	if !sys.Exists(executable) {
+	if !sys.Exists(onDisk(executable)) {
 		if running, err := os.Executable(); err == nil {
 			executable = running
 		}
@@ -235,7 +235,7 @@ func wakeGateway(target superviseTarget) {
 	}
 
 	logf("waking the gateway for %s", target.profileName)
-	result := sys.Run("/usr/bin/sudo", "-u", user, executable, "wake",
+	result := run("/usr/bin/sudo", "-u", user, executable, "wake",
 		"--vpn-profile", target.profileName, "--quiet")
 	if !result.OK() {
 		logf("could not wake the gateway for %s: %s", target.profileName, strings.TrimSpace(result.Output))
@@ -250,14 +250,14 @@ func RaiseTunnel(interfaceName, configPath string) error {
 	if configPath == "" {
 		configPath = "/etc/wireguard/" + interfaceName + ".conf"
 	}
-	file, err := tunnel.Load(configPath)
+	file, err := tunnel.Load(onDisk(configPath))
 	if err != nil {
 		return err
 	}
 	if err := CheckLocalNetworks(interfaceName, file); err != nil {
 		return err
 	}
-	return tunnel.Up(tunnel.Options{
+	return tunnelUp(tunnel.Options{
 		Name:    interfaceName,
 		Address: file.Address,
 		MTU:     file.MTU,
@@ -272,7 +272,7 @@ func RaiseTunnel(interfaceName, configPath string) error {
 // re-raising a tunnel that is up must not be refused because of the addresses
 // it put there itself.
 func CheckLocalNetworks(interfaceName string, file tunnel.File) error {
-	local, err := tunnel.LocalNetworks(ourDevices(interfaceName))
+	local, err := localNetworks(ourDevices(interfaceName))
 	local = withoutOurTunnels(local)
 	if err != nil {
 		// Not fatal. A machine whose interfaces cannot be listed is a machine
@@ -301,12 +301,12 @@ func CheckLocalNetworks(interfaceName string, file tunnel.File) error {
 // utun was "a network this machine is already on", which is true and
 // useless.
 func ourDevices(interfaceName string) []string {
-	devices := []string{interfaceName, tunnel.Device(interfaceName)}
+	devices := []string{interfaceName, tunnelDevice(interfaceName)}
 	for _, profile := range AllProfileSettings() {
 		if profile.InterfaceName == "" {
 			continue
 		}
-		devices = append(devices, profile.InterfaceName, tunnel.Device(profile.InterfaceName))
+		devices = append(devices, profile.InterfaceName, tunnelDevice(profile.InterfaceName))
 	}
 	return devices
 }
@@ -359,7 +359,7 @@ func withoutOurTunnels(local []tunnel.Network, extra ...string) []tunnel.Network
 // never handshaken at all counts as stale: the tunnel came up and never
 // connected, which is exactly the case worth retrying.
 func handshakeIsStale(interfaceName string) bool {
-	status, err := tunnel.Report(interfaceName)
+	status, err := tunnelReport(interfaceName)
 	if err != nil {
 		// A failure to ask is not evidence of a dead tunnel, and bouncing on it
 		// would make a working tunnel flap.
@@ -393,7 +393,7 @@ func InstallSupervisor(profilesDir string) error {
 	}
 
 	executable := SupervisorExecutable
-	if !sys.Exists(executable) {
+	if !sys.Exists(onDisk(executable)) {
 		// A source checkout has no installed helper; use the running one, which
 		// is the same build.
 		running, err := os.Executable()
@@ -404,7 +404,7 @@ func InstallSupervisor(profilesDir string) error {
 	}
 
 	definition := SupervisorDefinition(executable, profilesDir)
-	if err := sys.WriteAsRootNonInteractive(definition, SupervisorPath, 0o644); err != nil {
+	if err := writeAsRootNonInteractive(definition, SupervisorPath, 0o644); err != nil {
 		return err
 	}
 	return loadSupervisor(true)
@@ -412,14 +412,14 @@ func InstallSupervisor(profilesDir string) error {
 
 // RemoveSupervisor is safe to call when it was never installed.
 func RemoveSupervisor(asRoot bool) {
-	if !sys.Exists(SupervisorPath) {
+	if !sys.Exists(onDisk(SupervisorPath)) {
 		return
 	}
 	unloadSupervisor(asRoot)
 	if asRoot {
-		os.Remove(SupervisorPath)
+		os.Remove(onDisk(SupervisorPath))
 	} else {
-		sys.RunInteractive("/usr/bin/sudo", "rm", "-f", SupervisorPath)
+		runInteractive("/usr/bin/sudo", "rm", "-f", SupervisorPath)
 	}
 	ui.Done("Supervisor removed")
 }

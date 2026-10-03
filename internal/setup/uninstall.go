@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/awsops"
-	"github.com/IceSkatingCoach/MyMicroTunnel/internal/sys"
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/ui"
 )
 
@@ -62,7 +61,7 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 	if helper == "" {
 		helper = HelperPath
 	}
-	sys.RunInteractive("/usr/bin/sudo", helper, "tunnel", "down", config.InterfaceName)
+	runInteractive("/usr/bin/sudo", helper, "tunnel", "down", config.InterfaceName)
 	ui.Done("Tunnel %s down", config.InterfaceName)
 
 	// Withdrawn from AWS before the local state that says how to reach AWS is
@@ -92,13 +91,13 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 		// can no longer be asked about — and a key left in a Keychain is
 		// exactly the kind nobody rotates.
 		if settings.AccountID != "" {
-			if stored, err := awsops.LoadAppCredentials(settings.AccountID); err == nil && stored != nil {
+			if stored, err := loadAppCredentials(settings.AccountID); err == nil && stored != nil {
 				if client, err := awsops.LoadProfile(ctx, options.Profile, options.Region); err == nil {
 					if err := client.DeleteAppAccessKey(ctx, stored.AccessKeyID); err != nil {
 						ui.Warn("The application's AWS key is still live: %v", err)
 					}
 				}
-				if err := awsops.ForgetAppCredentials(settings.AccountID); err != nil {
+				if err := forgetAppCredentials(settings.AccountID); err != nil {
 					ui.Warn("Could not remove the stored credentials: %v", err)
 				} else {
 					ui.Done("Application AWS credentials removed from the %s", awsops.CredentialStore)
@@ -110,7 +109,7 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 	if options.DeleteKeys {
 		// Only this profile's own files. /etc/wireguard belongs to the machine
 		// and may hold another profile's key and config.
-		sys.RunInteractive("/usr/bin/sudo", "rm", "-f",
+		runInteractive("/usr/bin/sudo", "rm", "-f",
 			settingsKeyPath(settings, config), tunnelConfigPathOf(settings, config))
 		ui.Done("Tunnel key and configuration removed")
 	}
@@ -127,7 +126,7 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 		ui.Step("Deleting %s, which takes down the hostname it serves", options.StackName)
 		client, err := awsops.LoadProfile(ctx, options.Profile, options.Region)
 		if err != nil {
-			ui.Fail("Could not load AWS credentials: %v", err)
+			fail("Could not load AWS credentials: %v", err)
 		}
 
 		// The alias record is not the stack's, so deleting the stack leaves it
@@ -144,7 +143,7 @@ func Uninstall(ctx context.Context, options UninstallOptions) {
 		}
 
 		if err := client.DeleteStack(ctx, options.StackName); err != nil {
-			ui.Fail("Could not delete the stack: %v", err)
+			fail("Could not delete the stack: %v", err)
 		}
 		ui.Done("Stack deleted")
 
@@ -176,7 +175,7 @@ func remainingProfiles(removed string) []Settings {
 
 func rewriteSudoers(remaining []Settings) {
 	if len(remaining) == 0 {
-		sys.RunInteractive("/usr/bin/sudo", "rm", "-f", SudoersPath)
+		runInteractive("/usr/bin/sudo", "rm", "-f", SudoersPath)
 		ui.Done("Sudoers rule removed")
 		return
 	}
@@ -186,7 +185,7 @@ func rewriteSudoers(remaining []Settings) {
 		ui.Warn("Leaving %s alone: the rewritten rule did not validate: %v", SudoersPath, err)
 		return
 	}
-	if err := sys.WriteAsRoot(rule, SudoersPath, "0440"); err != nil {
+	if err := writeAsRoot(rule, SudoersPath, "0440"); err != nil {
 		ui.Warn("Could not rewrite %s: %v", SudoersPath, err)
 		return
 	}

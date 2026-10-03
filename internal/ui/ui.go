@@ -70,14 +70,18 @@ func Info(format string, args ...any) {
 	fmt.Printf("  "+format+"\n", args...)
 }
 
+// exit is os.Exit, replaced in tests so Fail can be checked without ending the
+// test binary.
+var exit = os.Exit
+
 // Fail ends the run. Every failure path goes through here so a half-finished
 // install always says which step stopped it rather than unwinding silently.
 func Fail(format string, args ...any) {
 	if emit("fail", fmt.Sprintf(format, args...)) {
-		os.Exit(1)
+		exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "\n✗ "+format+"\n", args...)
-	os.Exit(1)
+	exit(1)
 }
 
 func Ask(question, fallback string) string {

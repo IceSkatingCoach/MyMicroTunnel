@@ -34,10 +34,14 @@ func String() string {
 	return Version + " (" + commit + ")"
 }
 
+// readBuildInfo is a variable because a test binary is never stamped with a
+// revision, so the tests have to supply one.
+var readBuildInfo = debug.ReadBuildInfo
+
 // revisionFromBuildInfo recovers the commit for `go run` and `go install`
 // builds, which never pass through the Makefile's ldflags.
 func revisionFromBuildInfo() string {
-	info, ok := debug.ReadBuildInfo()
+	info, ok := readBuildInfo()
 	if !ok {
 		return ""
 	}

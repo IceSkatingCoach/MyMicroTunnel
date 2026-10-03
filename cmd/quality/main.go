@@ -57,10 +57,12 @@ const (
 type areaSpec struct{ name, tests, cover string }
 
 // The macOS and Linux jobs compile different _darwin and _linux files, so each
-// is an area of its own, and overall coverage is the union of the two.
+// is an area of its own, and overall coverage is the union of the two. The
+// end-to-end suite runs the built binary, so it reports tests but no coverage.
 var areas = []areaSpec{
 	{"macos", "macos-test.json", "macos.cover"},
 	{"linux", "linux-test.json", "linux.cover"},
+	{"e2e", "e2e-test.json", ""},
 }
 
 type Coverage struct {
@@ -437,6 +439,9 @@ func collect(dir, module string, context Context) (Run, error) {
 		} else {
 			run.Suites = append(run.Suites, Suite{Area: a.name, Name: "(no test report)", Tests: Tests{Total: 1, Failed: 1}})
 			run.Failed = append(run.Failed, Failure{Area: a.name, Suite: "(no test report)", Name: a.name + " tests did not produce a report", Message: "The test step crashed or was skipped."})
+		}
+		if a.cover == "" {
+			continue
 		}
 		if body, ok := readIf(dir, a.cover); ok {
 			files, totals := parseCoverProfile(string(body), a.name, module)

@@ -39,6 +39,13 @@ const (
 		wireguardGoVersion + ".tar.xz"
 )
 
+// The pin, as variables so the tests can serve an archive from a local server
+// and prove a mismatched one is refused.
+var (
+	archiveURL    = wireguardGoURL
+	archiveSHA256 = wireguardGoSHA256
+)
+
 // The release pins golang.org/x/net from early 2022, which no longer links
 // against a current Go: `link: golang.org/x/net/internal/socket: invalid
 // reference to syscall.recvmsg`. These are the versions this build upgrades to,
@@ -70,8 +77,8 @@ func main() {
 
 	archive := filepath.Join(work, "wireguard-go.tar.xz")
 	step("Downloading wireguard-go %s", wireguardGoVersion)
-	download(wireguardGoURL, archive)
-	verify(archive, wireguardGoSHA256)
+	download(archiveURL, archive)
+	verify(archive, archiveSHA256)
 	done("checksum matches")
 
 	source := filepath.Join(work, "source")
@@ -165,7 +172,7 @@ func isUniversal(path string) bool {
 }
 
 func archs(path string) string {
-	output, err := exec.Command("lipo", "-archs", path).CombinedOutput()
+	output, err := execCommand("lipo", "-archs", path).CombinedOutput()
 	if err != nil {
 		return ""
 	}
@@ -179,7 +186,7 @@ func runIn(directory, name string, args ...string) {
 }
 
 func runInEnv(directory string, environment []string, name string, args ...string) {
-	command := exec.Command(name, args...)
+	command := execCommand(name, args...)
 	command.Dir = directory
 	command.Env = append(os.Environ(), environment...)
 	command.Stdout = os.Stdout
@@ -211,9 +218,16 @@ func repoRoot() string {
 func step(format string, args ...any) { fmt.Printf("\n▸ "+format+"\n", args...) }
 func done(format string, args ...any) { fmt.Printf("  ✓ "+format+"\n", args...) }
 
+// exit and execCommand are variables so the tests can watch a failure and stand
+// in for the tools without ending the process or touching the machine.
+var (
+	exit        = os.Exit
+	execCommand = exec.Command
+)
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "\n✗ "+format+"\n", args...)
-	os.Exit(1)
+	exit(1)
 }
 
 func must(err error) {

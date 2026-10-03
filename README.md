@@ -443,6 +443,7 @@ root-owned and mode 0600, because it names the key the helper loads.
 | `cmd/fetch-wireguard`, `cmd/fetch-sparkle` | pinned third-party binaries |
 | `cmd/appcast`, `cmd/publish` | builds, checks and publishes a release |
 | `cmd/quality` | publishes each CI build's tests and coverage to the build-quality site |
+| `test/e2e` | the command against an emulated AWS account |
 | `internal/awsops` | every AWS call, through the SDK |
 | `internal/tunnel` | keys, config, UAPI, routes |
 | `internal/setup` | what to ask, what to write, what to verify |
@@ -457,6 +458,20 @@ make app                              # the universal .app bundle
 make pkg                              # signs if the certificates are present
 make pkg-notarized PROFILE=microtunnel   # signs, notarizes, staples
 ```
+
+The end-to-end suite deploys the real template with the real installer into
+[moto](https://github.com/getmoto/moto), an AWS emulator, then joins a second
+workstation, retires it and uninstalls:
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r test/e2e/requirements.txt
+MMT_E2E_PYTHON=$PWD/.venv/bin/python go test -tags e2e ./test/e2e/
+```
+
+Uninstall runs `sudo` against the machine, so locally the suite stops before it
+unless `MMT_E2E_DISPOSABLE=1`; CI sets that on its throwaway runners. The
+nightly Integration workflow is still the only thing that deploys into a real
+account.
 
 Everything ships universal — `arm64` and `x86_64` — and the build refuses to
 package a binary that is not, because a single-slice bundle installs cleanly and
@@ -476,7 +491,8 @@ Store, and Gatekeeper rejects it for a direct download.
 ## Build quality
 
 Every CI build publishes its Go test results and coverage from both macOS and
-Linux, and govulncheck's count of called vulnerabilities, to
+Linux, the end-to-end suite's results, and govulncheck's count of called
+vulnerabilities, to
 https://howarewedoing.maragato.ca/product.html?p=mymicrotunnel, with history and
 regression graphs per branch. The `Build quality` job fails on a failed test, or
 when coverage or the test count falls against the last passing `main` build.

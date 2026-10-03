@@ -49,13 +49,13 @@ func EnsureClientKey(s *Settings, interactive bool) string {
 		if !interactive && sudo[0] != "-n" {
 			continue
 		}
-		existing := sys.Run("/usr/bin/sudo", sudo...)
+		existing := run("/usr/bin/sudo", sudo...)
 		if !existing.OK() || existing.Output == "" {
 			continue
 		}
 		public, err := tunnel.PublicKey(strings.TrimSpace(existing.Output))
 		if err != nil {
-			ui.Fail("%s does not hold a WireGuard key: %v", keyPath, err)
+			fail("%s does not hold a WireGuard key: %v", keyPath, err)
 		}
 		ui.Done("Reusing the existing key")
 		return recordPublicKey(s.ProfileName, public)
@@ -63,16 +63,16 @@ func EnsureClientKey(s *Settings, interactive bool) string {
 
 	private, err := tunnel.GenerateKey()
 	if err != nil {
-		ui.Fail("Could not generate a WireGuard key: %v", err)
+		fail("Could not generate a WireGuard key: %v", err)
 	}
 
 	// Staged in the user's own directory here; the root-owned copy is written
 	// by the privileged stage, which may run in a separate process.
 	if err := os.MkdirAll(stagingDir(s.ProfileName), 0o700); err != nil {
-		ui.Fail("Could not create %s: %v", stagingDir(s.ProfileName), err)
+		fail("Could not create %s: %v", stagingDir(s.ProfileName), err)
 	}
 	if err := os.WriteFile(stagedKeyPath(s.ProfileName), []byte(private+"\n"), 0o600); err != nil {
-		ui.Fail("Could not stage the client key: %v", err)
+		fail("Could not stage the client key: %v", err)
 	}
 	// Recorded for the privileged stage, which cannot work the path out for
 	// itself: under sudo it has a different TMPDIR.
@@ -81,14 +81,14 @@ func EnsureClientKey(s *Settings, interactive bool) string {
 
 	public, err := tunnel.PublicKey(private)
 	if err != nil {
-		ui.Fail("Could not derive the public key: %v", err)
+		fail("Could not derive the public key: %v", err)
 	}
 	return recordPublicKey(s.ProfileName, public)
 }
 
 func recordPublicKey(profileName, publicKey string) string {
 	if publicKey == "" {
-		ui.Fail("`wg pubkey` produced nothing.")
+		fail("`wg pubkey` produced nothing.")
 	}
 	if err := os.MkdirAll(ProfileDir(profileName), 0o755); err == nil {
 		_ = os.WriteFile(PublicKeyPath(profileName), []byte(publicKey+"\n"), 0o644)
@@ -122,7 +122,7 @@ func Discover(ctx context.Context, client *awsops.Client, s *Settings) {
 
 	network, err := client.DiscoverNetwork(ctx, s.VpcID)
 	if err != nil {
-		ui.Fail("%v", err)
+		fail("%v", err)
 	}
 	s.VpcID = network.VpcID
 	s.VpcCidr = network.VpcCidr
@@ -134,14 +134,14 @@ func Discover(ctx context.Context, client *awsops.Client, s *Settings) {
 	if s.HostedZoneID == "" {
 		zone, err := client.FindHostedZone(ctx, s.DomainName)
 		if err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		s.HostedZoneID = zone
 	}
 	ui.Done("Hosted zone %s is authoritative for %s", s.HostedZoneID, s.DomainName)
 
 	if err := s.ValidateNetwork(); err != nil {
-		ui.Fail("%v", err)
+		fail("%v", err)
 	}
 }
 
@@ -152,13 +152,13 @@ func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 	if err := client.DeployStack(ctx, s.StackName, infra.TemplateForDeploy(), StackParameters(*s), func(resource string) {
 		ui.Info("%s", resource)
 	}); err != nil {
-		ui.Fail("The deployment failed: %v", err)
+		fail("The deployment failed: %v", err)
 	}
 	ui.Done("Stack deployed")
 
 	outputs, err := client.StackOutputs(ctx, s.StackName)
 	if err != nil {
-		ui.Fail("Could not read the stack outputs: %v", err)
+		fail("Could not read the stack outputs: %v", err)
 	}
 	s.Endpoint = outputs["GatewayPublicIp"]
 	s.TargetGroupARN = outputs["TargetGroupArn"]
@@ -166,7 +166,7 @@ func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 	s.GatewayGroupName = outputs["GatewayGroupName"]
 	s.TcpTargetGroups = TcpTargetGroups(outputs)
 	if s.Endpoint == "" || s.TargetGroupARN == "" {
-		ui.Fail("The stack did not report a gateway address and a target group.")
+		fail("The stack did not report a gateway address and a target group.")
 	}
 	if len(s.TcpTargetGroups) > 0 {
 		ui.Done("%d extra TCP port(s) exposed", len(s.TcpTargetGroups))
@@ -178,7 +178,7 @@ func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 	ui.Step("Pointing %s at the load balancer", s.DomainName)
 	if err := client.UpsertAlias(ctx, s.HostedZoneID, s.DomainName,
 		outputs["LoadBalancerDnsName"], outputs["LoadBalancerHostedZoneId"]); err != nil {
-		ui.Fail("Could not write the DNS record for %s: %v", s.DomainName, err)
+		fail("Could not write the DNS record for %s: %v", s.DomainName, err)
 	}
 	s.LoadBalancerDNSName = outputs["LoadBalancerDnsName"]
 	s.LoadBalancerZoneID = outputs["LoadBalancerHostedZoneId"]
@@ -187,7 +187,7 @@ func Deploy(ctx context.Context, client *awsops.Client, s *Settings) {
 	ui.Step("Waiting for the gateway to publish its public key")
 	serverKey, err := client.WaitForParameter(ctx, s.ServerKeyParameter(), 5*time.Minute)
 	if err != nil {
-		ui.Fail("%v. Check the instance's /var/log/cloud-init-output.log over SSM Session Manager.", err)
+		fail("%v. Check the instance's /var/log/cloud-init-output.log over SSM Session Manager.", err)
 	}
 	s.ServerPublicKey = serverKey
 	ui.Done("Gateway key retrieved")
@@ -281,12 +281,12 @@ func RegisterWorkstation(ctx context.Context, client *awsops.Client, s Settings,
 		Label:     s.PeerLabel,
 	})
 	if err != nil {
-		ui.Fail("Could not register this machine as a peer: %v", err)
+		fail("Could not register this machine as a peer: %v", err)
 	}
 	ui.Done("%d workstation(s) in the peer list", len(peers))
 
 	if err := client.RegisterTarget(ctx, s.TargetGroupARN, s.ClientAddress, s.Port()); err != nil {
-		ui.Fail("Could not register %s behind the load balancer: %v", s.ClientAddress, err)
+		fail("Could not register %s behind the load balancer: %v", s.ClientAddress, err)
 	}
 	ui.Done("%s:%s is a load balancer target", s.ClientAddress, s.ServicePort)
 
@@ -301,7 +301,7 @@ func RegisterWorkstation(ctx context.Context, client *awsops.Client, s Settings,
 			continue
 		}
 		if err := client.RegisterTarget(ctx, arn, s.ClientAddress, mapping.Local); err != nil {
-			ui.Fail("Could not register %s:%d behind the load balancer: %v", s.ClientAddress, mapping.Local, err)
+			fail("Could not register %s:%d behind the load balancer: %v", s.ClientAddress, mapping.Local, err)
 		}
 		ui.Done("%s:%d answers on %s:%d", s.ClientAddress, mapping.Local, s.DomainName, mapping.Published)
 	}
@@ -392,7 +392,7 @@ func ValidateSudoers(rule string) error {
 	if err := os.WriteFile(staged, []byte(rule), 0o600); err != nil {
 		return err
 	}
-	if result := sys.Run("/usr/sbin/visudo", "-c", "-f", staged); !result.OK() {
+	if result := run("/usr/sbin/visudo", "-c", "-f", staged); !result.OK() {
 		return fmt.Errorf("visudo rejected the generated rule:\n%s", result.Output)
 	}
 	return nil
@@ -427,7 +427,7 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 	// gateway trusting a public key whose private half no longer exists: the
 	// tunnel comes up, sends, and is silently dropped at the far end as an
 	// unknown peer.
-	if asRoot && sys.Exists(keyPath) {
+	if asRoot && sys.Exists(onDisk(keyPath)) {
 		if _, err := os.Stat(staged); err == nil {
 			os.Remove(staged)
 			ui.Warn("Keeping the existing %s; the newly generated key was discarded.", keyPath)
@@ -440,7 +440,7 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 	// unprivileged stage reused a recorded public key whose private half
 	// lives somewhere this profile does not look — so say exactly that, here,
 	// where it is still true and still fixable.
-	if asRoot && !sys.Exists(keyPath) {
+	if asRoot && !sys.Exists(onDisk(keyPath)) {
 		if _, err := os.Stat(staged); err != nil {
 			return fmt.Errorf(
 				"VPN profile %q has no private key at %s, and none was staged at %s.\n\n"+
@@ -466,12 +466,12 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 			if write.mode == "0440" {
 				mode = 0o440
 			}
-			if err := sys.WriteAsRootNonInteractive(write.content, write.path, mode); err != nil {
+			if err := writeAsRootNonInteractive(write.content, write.path, mode); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := sys.WriteAsRoot(write.content, write.path, write.mode); err != nil {
+		if err := writeAsRoot(write.content, write.path, write.mode); err != nil {
 			return err
 		}
 	}
@@ -491,7 +491,7 @@ func WriteRootFiles(s Settings, username string, asRoot bool) error {
 		// The interactive path has no way to write the daemon's definition
 		// without another sudo, and doing it here keeps the number of password
 		// prompts at the one the user has already answered.
-		if err := sys.WriteAsRoot(
+		if err := writeAsRoot(
 			SupervisorDefinition(SupervisorExecutable, ProfilesDir()),
 			SupervisorPath, "0644"); err != nil {
 			return err
@@ -551,12 +551,12 @@ func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 
 	// Through sudo rather than in this process: the install may be running
 	// unprivileged, and this is the same command the menu bar is allowed to run.
-	up := sys.Run("/usr/bin/sudo", "-n", HelperPath, "tunnel", "up", s.InterfaceName)
+	up := run("/usr/bin/sudo", "-n", HelperPath, "tunnel", "up", s.InterfaceName)
 	if !up.OK() {
 		// A source checkout has no installed helper yet, so fall back to doing
 		// it here, which works when the install itself was started with sudo.
 		if err := RaiseTunnel(s.InterfaceName, s.TunnelConfigPath()); err != nil {
-			ui.Fail("The tunnel would not come up: %v\n%s", err, up.Output)
+			fail("The tunnel would not come up: %v\n%s", err, up.Output)
 		}
 	}
 	ui.Done("Tunnel is up")
@@ -567,15 +567,15 @@ func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 	// identical in a single attempt.
 	var reachable bool
 	for attempt := 0; attempt < 6; attempt++ {
-		if sys.Run("ping", pingArgs(s.GatewayAddress)...).OK() {
+		if run("ping", pingArgs(s.GatewayAddress)...).OK() {
 			reachable = true
 			break
 		}
 		ui.Info("waiting for the gateway to pick up this peer")
-		time.Sleep(20 * time.Second)
+		sleep(20 * time.Second)
 	}
 	if !reachable {
-		ui.Fail("The gateway at %s did not answer. Its peer list is %s.",
+		fail("The gateway at %s did not answer. Its peer list is %s.",
 			s.GatewayAddress, s.PeersParameter())
 	}
 	ui.Done("Gateway %s answers", s.GatewayAddress)
@@ -585,28 +585,28 @@ func Verify(ctx context.Context, client *awsops.Client, s Settings) {
 	var err error
 	for attempt := 0; attempt < 10; attempt++ {
 		if state, err = client.TargetHealthOf(ctx, s.TargetGroupARN, s.ClientAddress); err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		if state == "healthy" {
 			break
 		}
 		ui.Info("target %s", state)
-		time.Sleep(20 * time.Second)
+		sleep(20 * time.Second)
 	}
 	if state != "healthy" {
-		ui.Fail("The load balancer still reports this machine as %q. Check that the service is listening on 0.0.0.0:%s.",
+		fail("The load balancer still reports this machine as %q. Check that the service is listening on 0.0.0.0:%s.",
 			state, s.ServicePort)
 	}
 	ui.Done("Load balancer target is healthy")
 
-	probe := &http.Client{Timeout: 15 * time.Second}
+	probe := &http.Client{Timeout: 15 * time.Second, Transport: probeTransport}
 	response, err := probe.Get(s.HealthCheckURL())
 	if err != nil {
-		ui.Fail("%s did not answer: %v", s.HealthCheckURL(), err)
+		fail("%s did not answer: %v", s.HealthCheckURL(), err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		ui.Fail("%s returned %d.", s.HealthCheckURL(), response.StatusCode)
+		fail("%s returned %d.", s.HealthCheckURL(), response.StatusCode)
 	}
 	ui.Done("%s returns 200", s.HealthCheckURL())
 }
@@ -625,7 +625,7 @@ func CurrentUsername() string {
 	}
 
 	// Running as root with no SUDO_USER: ask who owns the login session.
-	if os.Geteuid() == 0 {
+	if geteuid() == 0 {
 		if name := consoleUser(); name != "" && name != "root" {
 			return name
 		}

@@ -207,7 +207,10 @@ func envOr(name, fallback string) string {
 	return fallback
 }
 
+// exit is a variable so the tests can watch a failure without ending the process.
+var exit = os.Exit
+
 func fail(format string, arguments ...any) {
 	fmt.Fprintf(os.Stderr, "✗ "+format+"\n", arguments...)
-	os.Exit(1)
+	exit(1)
 }

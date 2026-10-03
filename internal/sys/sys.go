@@ -78,6 +78,10 @@ func Exists(path string) bool {
 	return err == nil
 }
 
+// runInteractive is RunInteractive, replaced in tests so that WriteAsRoot can be
+// checked without running sudo.
+var runInteractive = RunInteractive
+
 // WriteAsRoot stages the content in a private temporary file and moves it into
 // place with `install`, so the destination's owner and mode are set by the same
 // step that writes it. A file holding a private key never exists readable, not
@@ -94,7 +98,7 @@ func WriteAsRoot(content, destination, mode string) error {
 		return err
 	}
 
-	if code := RunInteractive("/usr/bin/sudo", "install", "-m", mode, "-o", "0", "-g", "0", staged, destination); code != 0 {
+	if code := runInteractive("/usr/bin/sudo", "install", "-m", mode, "-o", "0", "-g", "0", staged, destination); code != 0 {
 		return fmt.Errorf("sudo install to %s exited %d", destination, code)
 	}
 	return nil
