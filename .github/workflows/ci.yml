@@ -3,6 +3,12 @@ name: CI
 
 # Runs on macOS because half of what this repository ships is a Swift app and a
 # signed installer package, and neither of those can be built anywhere else.
+#
+# The Go tests' results and coverage from both platforms, and govulncheck's
+# findings, are also published to https://howarewedoing.maragato.ca with
+# history and regression graphs (cmd/quality). The quality job fails on any
+# failed test, and on coverage or test count falling against the last passing
+# main build.
 
 on:
   push:
@@ -16,6 +22,9 @@ permissions:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  QUALITY_DIR: ${{ github.workspace }}/quality
 
 jobs:
   go:
@@ -43,7 +52,19 @@ jobs:
         run: go vet ./...
 
       - name: go test
-        run: go test -race ./...
+        # -json for the quality report; jq turns it back into the usual log.
+        run: |
+          mkdir -p "$QUALITY_DIR"
+          go test -race -json -coverprofile="$QUALITY_DIR/macos.cover" ./... \
+            | tee "$QUALITY_DIR/macos-test.json" | jq -rj 'select(.Action == "output").Output'
+
+      - name: Keep the test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-macos
+          path: quality/
+          retention-days: 14
 
       - name: Build universal
         # The package ships one binary for both architectures. A build that only
@@ -78,7 +99,19 @@ jobs:
         run: go vet ./...
 
       - name: go test
-        run: go test -race ./...
+        # -json for the quality report; jq turns it back into the usual log.
+        run: |
+          mkdir -p "$QUALITY_DIR"
+          go test -race -json -coverprofile="$QUALITY_DIR/linux.cover" ./... \
+            | tee "$QUALITY_DIR/linux-test.json" | jq -rj 'select(.Action == "output").Output'
+
+      - name: Keep the test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-linux
+          path: quality/
+          retention-days: 14
 
       - name: Build the Debian bundle
         run: |
@@ -243,3 +276,63 @@ jobs:
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
           "$(go env GOPATH)/bin/govulncheck" ./...
+
+      - name: govulncheck report
+        # -json always exits 0, so this only feeds the quality report; the
+        # step above is the one that fails the build.
+        if: always()
+        run: |
+          mkdir -p "$QUALITY_DIR"
+          "$(go env GOPATH)/bin/govulncheck" -json ./... > "$QUALITY_DIR/govulncheck.json" || true
+
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-govulncheck
+          path: quality/
+          retention-days: 14
+
+  # Runs even when the tests failed, so a red build is published too. A
+  # platform whose tests never wrote a report counts as failed tests.
+  quality:
+    name: Build quality
+    needs: [go, linux, vulnerabilities]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Gather reports
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: quality-*
+          path: quality/
+          merge-multiple: true
+
+      - name: Collect report
+        run: |
+          mkdir -p "$QUALITY_DIR"
+          go run ./cmd/quality collect "$QUALITY_DIR"
+
+      - name: Credentials for the quality site
+        if: vars.HOWAREWEDOING_ROLE_ARN != '' && github.event.pull_request.head.repo.fork != true
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-to-assume: ${{ vars.HOWAREWEDOING_ROLE_ARN }}
+          role-session-name: howarewedoing-publish
+
+      - name: Publish and check for regressions
+        env:
+          HOWAREWEDOING_BUCKET: ${{ vars.HOWAREWEDOING_ROLE_ARN != '' && github.event.pull_request.head.repo.fork != true && vars.HOWAREWEDOING_BUCKET || '' }}
+        run: go run ./cmd/quality publish "$QUALITY_DIR"
