@@ -442,6 +442,7 @@ root-owned and mode 0600, because it names the key the helper loads.
 | `cmd/build-pkg` | builds, signs and notarizes the `.pkg` |
 | `cmd/fetch-wireguard`, `cmd/fetch-sparkle` | pinned third-party binaries |
 | `cmd/appcast`, `cmd/publish` | builds, checks and publishes a release |
+| `cmd/quality` | publishes each CI build's tests and coverage to the build-quality site |
 | `internal/awsops` | every AWS call, through the SDK |
 | `internal/tunnel` | keys, config, UAPI, routes |
 | `internal/setup` | what to ask, what to write, what to verify |
@@ -471,6 +472,22 @@ Manage Certificates, and both requiring the Account Holder role:
 
 An **Apple Distribution** certificate is not a substitute — that is for the App
 Store, and Gatekeeper rejects it for a direct download.
+
+## Build quality
+
+Every CI build publishes its Go test results and coverage from both macOS and
+Linux, and govulncheck's count of called vulnerabilities, to
+https://howarewedoing.maragato.ca/product.html?p=mymicrotunnel, with history and
+regression graphs per branch. The `Build quality` job fails on a failed test, or
+when coverage or the test count falls against the last passing `main` build.
+Go measures statements rather than lines, branches or functions, so the line
+figure is statement coverage and the other two show as no data. The site is
+public: only numbers, test names, package paths and the first line of a failure
+are published.
+
+Publishing needs the repository variables `HOWAREWEDOING_ROLE_ARN` and
+`HOWAREWEDOING_BUCKET`, from the `howarewedoing` publisher stack for this
+product. Without them the summary still lands on the job page.
 
 ## Releasing
 
