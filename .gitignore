@@ -9,3 +9,6 @@ third_party/
 *.swp
 *.swo
 /appcast
+
+# The end-to-end suite's Python environment.
+.venv/

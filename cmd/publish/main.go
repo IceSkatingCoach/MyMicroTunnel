@@ -45,6 +45,22 @@ import (
 // it. The product's name changed; this string is an address, not a name.
 const defaultStackName = "xprem-vpn-updates"
 
+// feedClient is the part of awsops.Client this command uses, named so the tests
+// can stand in for AWS.
+type feedClient interface {
+	Identity(ctx context.Context) (string, error)
+	FindHostedZone(ctx context.Context, domain string) (string, error)
+	DeployStack(ctx context.Context, name, templateBody string, parameters map[string]string, onProgress func(string)) error
+	StackOutputs(ctx context.Context, stackName string) (map[string]string, error)
+	ObjectExists(ctx context.Context, bucket, key string) (bool, error)
+	Upload(ctx context.Context, bucket, key, path, contentType, cacheControl string) error
+	Invalidate(ctx context.Context, distributionID string, paths ...string) (string, error)
+}
+
+var loadProfile = func(ctx context.Context, profile, region string) (feedClient, error) {
+	return awsops.LoadProfile(ctx, profile, region)
+}
+
 func main() {
 	setup := flag.Bool("setup", false, "deploy or update the feed's own infrastructure and exit")
 	stackName := flag.String("stack", defaultStackName, "CloudFormation stack holding the feed")
@@ -58,7 +74,7 @@ func main() {
 	flag.Parse()
 
 	ctx := context.Background()
-	client, err := awsops.LoadProfile(ctx, *profile, *region)
+	client, err := loadProfile(ctx, *profile, *region)
 	if err != nil {
 		fail("Could not load AWS credentials: %v", err)
 	}
@@ -77,7 +93,7 @@ func main() {
 
 // --- the feed's own infrastructure -----------------------------------------
 
-func deployFeedStack(ctx context.Context, client *awsops.Client, stackName, bucket, domain, hostedZone string) {
+func deployFeedStack(ctx context.Context, client feedClient, stackName, bucket, domain, hostedZone string) {
 	if bucket == "" {
 		fail("--setup needs --bucket. S3 bucket names are global, so there is no\n" +
 			"  default that is safe to pick on your behalf.")
@@ -130,7 +146,7 @@ const latestPackageKey = "MyMicroTunnel.pkg"
 
 // --- publishing a release --------------------------------------------------
 
-func publish(ctx context.Context, client *awsops.Client, stackName string, force bool) {
+func publish(ctx context.Context, client feedClient, stackName string, force bool) {
 	outputs, err := client.StackOutputs(ctx, stackName)
 	if err != nil {
 		fail("Could not read %s: %v\n\n"+
@@ -232,6 +248,13 @@ func publish(ctx context.Context, client *awsops.Client, stackName string, force
 	fmt.Printf("\n✓ %s is published at %s\n", version, feedURL)
 }
 
+// How long, and how often, verify waits for the CDN; variables so the tests
+// need not wait two minutes to see it give up.
+var (
+	feedPatience      = 2 * time.Minute
+	feedRetryInterval = 10 * time.Second
+)
+
 // verify reads the feed back over the public URL. Everything before this proves
 // what was uploaded; only this proves what will be served.
 func verify(feedURL, version string) {
@@ -239,7 +262,7 @@ func verify(feedURL, version string) {
 
 	// The invalidation is not instant, so a stale feed for a few seconds is
 	// expected rather than a failure.
-	deadline := time.Now().Add(2 * time.Minute)
+	deadline := time.Now().Add(feedPatience)
 	client := &http.Client{Timeout: 20 * time.Second}
 
 	for attempt := 0; ; attempt++ {
@@ -259,7 +282,7 @@ func verify(feedURL, version string) {
 				"  The upload succeeded, so this is the cache or the distribution.\n"+
 				"  Check the invalidation in the CloudFront console.", feedURL, version)
 		}
-		time.Sleep(10 * time.Second)
+		time.Sleep(feedRetryInterval)
 	}
 }
 
@@ -321,15 +344,22 @@ func done(format string, args ...any) { fmt.Printf("  ✓ "+format+"\n", args...
 func warn(format string, args ...any) { fmt.Printf("  ! "+format+"\n", args...) }
 func info(format string, args ...any) { fmt.Printf("  "+format+"\n", args...) }
 
+// exit and execCommand are variables so the tests can watch a failure and stand
+// in for the tools without ending the process or touching the machine.
+var (
+	exit        = os.Exit
+	execCommand = exec.Command
+)
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "\n✗ "+format+"\n", args...)
-	os.Exit(1)
+	exit(1)
 }
 
 // runIn runs a command in the checkout and returns its combined output, so a
 // failure can be shown in full rather than summarised.
 func runIn(directory, name string, args ...string) (string, int) {
-	command := exec.Command(name, args...)
+	command := execCommand(name, args...)
 	command.Dir = directory
 	output, err := command.CombinedOutput()
 	code := 0

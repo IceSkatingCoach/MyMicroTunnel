@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/sys"
-	"github.com/IceSkatingCoach/MyMicroTunnel/internal/tunnel"
 	"github.com/IceSkatingCoach/MyMicroTunnel/internal/ui"
 )
 
@@ -90,14 +89,14 @@ func SupervisorDefinition(executable, profilesDir string) string {
 // list would not take effect until the next reboot.
 func loadSupervisor(asRoot bool) error {
 	if asRoot {
-		sys.Run("/bin/launchctl", "bootout", "system/"+SupervisorLabel)
-		if result := sys.Run("/bin/launchctl", "bootstrap", "system", SupervisorPath); !result.OK() {
+		run("/bin/launchctl", "bootout", "system/"+SupervisorLabel)
+		if result := run("/bin/launchctl", "bootstrap", "system", SupervisorPath); !result.OK() {
 			return fmt.Errorf("launchctl refused the supervisor: %s", result.Output)
 		}
 		return nil
 	}
-	sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootout", "system/"+SupervisorLabel)
-	if sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootstrap", "system", SupervisorPath) != 0 {
+	runInteractive("/usr/bin/sudo", "/bin/launchctl", "bootout", "system/"+SupervisorLabel)
+	if runInteractive("/usr/bin/sudo", "/bin/launchctl", "bootstrap", "system", SupervisorPath) != 0 {
 		return fmt.Errorf("launchctl refused the supervisor")
 	}
 	return nil
@@ -105,16 +104,16 @@ func loadSupervisor(asRoot bool) error {
 
 func unloadSupervisor(asRoot bool) {
 	if asRoot {
-		sys.Run("/bin/launchctl", "bootout", "system/"+SupervisorLabel)
+		run("/bin/launchctl", "bootout", "system/"+SupervisorLabel)
 		return
 	}
-	sys.RunInteractive("/usr/bin/sudo", "/bin/launchctl", "bootout", "system/"+SupervisorLabel)
+	runInteractive("/usr/bin/sudo", "/bin/launchctl", "bootout", "system/"+SupervisorLabel)
 }
 
 // supervisorState is launchd's one-line view of the job, or "" when it is not
 // loaded.
 func supervisorState() string {
-	state := sys.Run("/bin/launchctl", "print", "system/"+SupervisorLabel)
+	state := run("/bin/launchctl", "print", "system/"+SupervisorLabel)
 	if !state.OK() {
 		return ""
 	}
@@ -127,14 +126,14 @@ func supervisorState() string {
 }
 
 func supervisorLog(lines int) string {
-	if log := sys.Run("/usr/bin/tail", "-n", fmt.Sprint(lines), SupervisorLogPath); log.OK() {
+	if log := run("/usr/bin/tail", "-n", fmt.Sprint(lines), SupervisorLogPath); log.OK() {
 		return log.Output
 	}
 	return ""
 }
 
 func operatingSystem() (string, string) {
-	if product := sys.Run("/usr/bin/sw_vers", "-productVersion"); product.OK() {
+	if product := run("/usr/bin/sw_vers", "-productVersion"); product.OK() {
 		return "macOS", product.Output
 	}
 	return "macOS", ""
@@ -156,7 +155,7 @@ func appVersionOf(bundle string) string {
 // consoleUser is who owns the login session, for a root process that was not
 // started through sudo.
 func consoleUser() string {
-	if console := sys.Run("/usr/bin/stat", "-f%Su", "/dev/console"); console.OK() {
+	if console := run("/usr/bin/stat", "-f%Su", "/dev/console"); console.OK() {
 		return strings.TrimSpace(console.Output)
 	}
 	return ""
@@ -168,13 +167,13 @@ func pingArgs(address string) []string {
 }
 
 // OpenApp launches the menu bar app.
-func OpenApp() { sys.Run("/usr/bin/open", InstalledAppPath) }
+func OpenApp() { run("/usr/bin/open", InstalledAppPath) }
 
 func removeApp() {
-	sys.Run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
-	sys.Run("osascript", "-e",
+	run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
+	run("osascript", "-e",
 		`tell application "System Events" to delete (every login item whose name is "MyMicroTunnel")`)
-	os.RemoveAll(InstalledAppPath)
+	os.RemoveAll(onDisk(InstalledAppPath))
 	ui.Done("App and login item removed")
 }
 
@@ -188,9 +187,9 @@ func removeApp() {
 func Prerequisites(interactive bool) string {
 	ui.Step("Checking prerequisites")
 
-	engine, err := tunnel.Engine("")
+	engine, err := tunnelEngine("")
 	if err != nil {
-		ui.Fail("%v", err)
+		fail("%v", err)
 	}
 	ui.Done("wireguard-go at %s", engine)
 	return engine
@@ -211,19 +210,19 @@ func InstallApp(repoRoot string) {
 	}
 	if menubarDir == "" || !sys.Exists(menubarDir) {
 		ui.Step("Menu bar app")
-		if sys.Exists(InstalledAppPath) {
+		if sys.Exists(onDisk(InstalledAppPath)) {
 			ui.Done("Already installed at %s", InstalledAppPath)
 			return
 		}
 		// Running from inside a bundle that is not in /Applications yet: the
 		// app can install itself rather than declaring the situation hopeless.
 		if bundle := enclosingBundle(); bundle != "" {
-			if result := sys.Run("cp", "-R", bundle, "/Applications/"); result.OK() {
+			if result := run("cp", "-R", bundle, "/Applications/"); result.OK() {
 				ui.Done("Copied %s to %s", bundle, InstalledAppPath)
 				return
 			}
 		}
-		ui.Fail("%s is missing and there are no sources to build it from.", InstalledAppPath)
+		fail("%s is missing and there are no sources to build it from.", InstalledAppPath)
 	}
 
 	// Never as root. The privileged stage runs from the same checkout, and a
@@ -231,10 +230,10 @@ func InstallApp(repoRoot string) {
 	// the developer who owns the tree cannot delete or overwrite — every
 	// later build then fails on "File exists" from lipo, with nothing saying
 	// why. Observed exactly that way.
-	if os.Geteuid() == 0 {
+	if geteuid() == 0 {
 		if sys.Exists(filepath.Join(menubarDir, "build", "MyMicroTunnel.app")) {
 			ui.Step("Menu bar app")
-			if result := sys.Run("cp", "-R",
+			if result := run("cp", "-R",
 				filepath.Join(menubarDir, "build", "MyMicroTunnel.app"), "/Applications/"); result.OK() {
 				ui.Done("%s", InstalledAppPath)
 				return
@@ -245,14 +244,14 @@ func InstallApp(repoRoot string) {
 	}
 
 	ui.Step("Building the menu bar app")
-	if sys.RunInteractive("make", "-C", menubarDir, "app") != 0 {
-		ui.Fail("The app did not build.")
+	if runInteractive("make", "-C", menubarDir, "app") != 0 {
+		fail("The app did not build.")
 	}
 
-	sys.Run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
-	os.RemoveAll(InstalledAppPath)
-	if result := sys.Run("cp", "-R", filepath.Join(menubarDir, "build", "MyMicroTunnel.app"), "/Applications/"); !result.OK() {
-		ui.Fail("Could not copy the app into /Applications: %s", result.Output)
+	run("/usr/bin/pkill", "-f", "MyMicroTunnel.app/Contents/MacOS/MyMicroTunnel")
+	os.RemoveAll(onDisk(InstalledAppPath))
+	if result := run("cp", "-R", filepath.Join(menubarDir, "build", "MyMicroTunnel.app"), "/Applications/"); !result.OK() {
+		fail("Could not copy the app into /Applications: %s", result.Output)
 	}
 	ui.Done("%s", InstalledAppPath)
 }
@@ -262,9 +261,9 @@ func RegisterLoginItem() {
 	// the tunnel, which stays a deliberate act. When the supervisor is
 	// installed, the tunnel's state at boot comes from the desired-state file
 	// instead, which is the user's own last decision rather than a default.
-	sys.Run("osascript", "-e",
+	run("osascript", "-e",
 		`tell application "System Events" to delete (every login item whose name is "MyMicroTunnel")`)
-	result := sys.Run("osascript", "-e",
+	result := run("osascript", "-e",
 		`tell application "System Events" to make login item at end with properties {path:"`+InstalledAppPath+`", hidden:true}`)
 	if !result.OK() {
 		ui.Warn("Could not register the login item: %s", result.Output)

@@ -104,14 +104,14 @@ func diagnoseMachine(report *Report) {
 	if name, release := operatingSystem(); release != "" {
 		report.field(name, "%s", release)
 	}
-	if arch := sys.Run("/usr/bin/uname", "-m"); arch.OK() {
+	if arch := run("/usr/bin/uname", "-m"); arch.OK() {
 		report.field("architecture", "%s", arch.Output)
 	}
 	if name, err := os.Hostname(); err == nil {
 		report.field("hostname", "%s", name)
 	}
-	report.field("running as", "uid %d", os.Geteuid())
-	if os.Geteuid() != 0 {
+	report.field("running as", "uid %d", geteuid())
+	if geteuid() != 0 {
 		report.field("", "%s", "(the handshake and the tunnel's own view need sudo)")
 	}
 }
@@ -143,21 +143,21 @@ func diagnoseInstall(report *Report, config appConfig, settings Settings) {
 	report.section("what is installed")
 
 	for _, path := range installedPaths() {
-		info, err := os.Stat(path)
+		info, err := os.Stat(onDisk(path))
 		if err != nil {
 			report.field(shortName(path), "MISSING")
 			continue
 		}
 		report.field(shortName(path), "%s  %s  %s",
-			info.Mode().Perm(), info.ModTime().Format("2006-01-02 15:04"), owner(path))
+			info.Mode().Perm(), info.ModTime().Format("2006-01-02 15:04"), owner(onDisk(path)))
 	}
 
-	if bundled := appVersionOf(InstalledAppPath); bundled != "" {
+	if bundled := appVersionOf(onDisk(InstalledAppPath)); bundled != "" {
 		report.field("app version", "%s", bundled)
 	}
 	// A helper that disagrees with the app is the shape an interrupted update
 	// leaves behind, and it is invisible from the menu bar.
-	if helper := sys.Run(HelperPath, "version"); helper.OK() {
+	if helper := run(HelperPath, "version"); helper.OK() {
 		report.field("helper version", "%s", helper.Output)
 	}
 
@@ -181,10 +181,10 @@ func diagnoseInstall(report *Report, config appConfig, settings Settings) {
 	// Contents never shown. Its presence and mode are the whole question —
 	// and "cannot look" is a third answer, distinct from "not there".
 	keyPath := Settings{InterfaceName: config.InterfaceName}.ClientKeyPath()
-	info, err := os.Stat(keyPath)
+	info, err := os.Stat(onDisk(keyPath))
 	switch {
 	case err == nil:
-		report.field("private key", "present, mode %s, %s", info.Mode().Perm(), owner(keyPath))
+		report.field("private key", "present, mode %s, %s", info.Mode().Perm(), owner(onDisk(keyPath)))
 		if info.Mode().Perm() != 0o600 {
 			report.field("", "%s", "WARNING: expected mode 600")
 		}
@@ -204,12 +204,12 @@ func diagnoseInstall(report *Report, config appConfig, settings Settings) {
 func diagnoseTunnel(report *Report, config appConfig) {
 	report.section("tunnel")
 
-	device := tunnel.Device(config.InterfaceName)
-	present := tunnel.AddressPresent(config.ClientAddress)
+	device := tunnelDevice(config.InterfaceName)
+	present := tunnelAddressPresent(config.ClientAddress)
 
 	// Visible but unreadable without root, which is how Linux presents it.
-	status, err := tunnel.Report(config.InterfaceName)
-	if device != "" && err != nil && os.Geteuid() != 0 {
+	status, err := tunnelReport(config.InterfaceName)
+	if device != "" && err != nil && geteuid() != 0 {
 		device = ""
 	}
 
@@ -256,7 +256,7 @@ func diagnoseService(report *Report, config appConfig) {
 		return
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 5 * time.Second, Transport: probeTransport}
 
 	// Any HTTP response means reachable. A 404 is the service answering, which
 	// is the question being asked here; whether the path exists is a different
@@ -279,7 +279,7 @@ func diagnoseService(report *Report, config appConfig) {
 	// a finding, and sends whoever is diagnosing after a problem that is not
 	// there.
 	switch {
-	case !tunnel.AddressPresent(config.ClientAddress):
+	case !tunnelAddressPresent(config.ClientAddress):
 		report.field("note", "the tunnel is down, so the second probe proves nothing")
 	case onLoopback && !onTunnel:
 		report.field("PROBLEM", "%s", "the service answers on 127.0.0.1 but not on "+
@@ -361,7 +361,7 @@ func diagnoseAWS(ctx context.Context, report *Report, options DiagnoseOptions) {
 func diagnoseLocalNetworks(report *Report, config appConfig) {
 	report.section("networks this machine is on")
 
-	local, err := tunnel.LocalNetworks(ourDevices(config.InterfaceName))
+	local, err := localNetworks(ourDevices(config.InterfaceName))
 	local = withoutOurTunnels(local, config.ClientAddress)
 	if err != nil {
 		report.field("interfaces", "could not be listed: %v", firstLine(err.Error()))
@@ -371,7 +371,7 @@ func diagnoseLocalNetworks(report *Report, config appConfig) {
 		report.field(network.Interface, "%s", network.Net)
 	}
 
-	file, err := tunnel.Load(Settings{InterfaceName: config.InterfaceName}.TunnelConfigPath())
+	file, err := tunnel.Load(onDisk(Settings{InterfaceName: config.InterfaceName}.TunnelConfigPath()))
 	if err != nil {
 		report.field("tunnel routes", "the configuration could not be read: %v", firstLine(err.Error()))
 		return
@@ -393,7 +393,7 @@ func diagnoseLocalNetworks(report *Report, config appConfig) {
 func diagnoseSupervisor(report *Report, profileName string) {
 	report.section("supervisor")
 
-	if !sys.Exists(SupervisorPath) {
+	if !sys.Exists(onDisk(SupervisorPath)) {
 		report.field("installed", "no")
 		return
 	}
@@ -450,21 +450,21 @@ func owner(path string) string {
 }
 
 func sudoersState() string {
-	if _, err := os.Stat(SudoersPath); err != nil {
+	if _, err := os.Stat(onDisk(SudoersPath)); err != nil {
 		if os.IsPermission(err) {
 			return "cannot check without sudo"
 		}
 		return "MISSING — the menu bar cannot move the tunnel"
 	}
 
-	check := sys.Run("/usr/sbin/visudo", "-c", "-f", SudoersPath)
+	check := run("/usr/sbin/visudo", "-c", "-f", onDisk(SudoersPath))
 	if check.OK() {
 		return "present, visudo accepts it"
 	}
 	// visudo refusing to *open* the file is a permission problem, not a
 	// malformed rule. Reporting the second when it is the first sends the
 	// reader looking for a syntax error that is not there.
-	if strings.Contains(check.Output, "unable to open") || os.Geteuid() != 0 {
+	if strings.Contains(check.Output, "unable to open") || geteuid() != 0 {
 		return "present; run with sudo to validate it"
 	}
 	return "present but visudo rejects it: " + firstLine(check.Output)

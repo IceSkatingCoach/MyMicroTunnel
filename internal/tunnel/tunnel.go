@@ -16,6 +16,14 @@ import (
 // two tunnels that do not know about each other.
 const RunDir = "/var/run/wireguard"
 
+// runDir and execCommand are RunDir and exec.Command, held in variables so the
+// tests can raise a tunnel without root and without touching this machine's
+// network.
+var (
+	runDir      = RunDir
+	execCommand = exec.Command
+)
+
 // Options is one tunnel, as this machine runs it.
 type Options struct {
 	// Name is the logical name — wg0 — not the utun device the kernel hands

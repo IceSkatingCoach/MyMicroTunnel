@@ -105,7 +105,7 @@ func (c *Client) WakeGateway(ctx context.Context, options WakeOptions) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(pollInterval):
 		}
 
 		inService, _, err := groupState(ctx, scaling, options.GroupName)

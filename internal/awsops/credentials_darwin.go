@@ -15,6 +15,10 @@ const CredentialStore = "login Keychain"
 // silently used for the other.
 const keychainService = "ca.maragato.mymicrotunnel.aws"
 
+// securityTool is a variable only so tests can stand in for it and never
+// reach the real Keychain.
+var securityTool = "/usr/bin/security"
+
 // --- the Keychain ----------------------------------------------------------
 //
 // Through /usr/bin/security rather than the Security framework, because
@@ -37,7 +41,7 @@ func StoreAppCredentials(accountID string, credentials *AppCredentials) error {
 
 	// -U updates an existing item rather than failing, which is what a
 	// re-mint after a revoked key has to do.
-	command := exec.Command("/usr/bin/security", "add-generic-password",
+	command := exec.Command(securityTool, "add-generic-password",
 		"-a", accountID, "-s", keychainService, "-w", value, "-U",
 		"-D", "MyMicroTunnel AWS credentials",
 		"-j", "Created by MyMicroTunnel. Deleting this makes the app ask for AWS credentials again.")
@@ -50,7 +54,7 @@ func StoreAppCredentials(accountID string, credentials *AppCredentials) error {
 // LoadAppCredentials returns nil, nil when there is nothing stored — a first
 // run, or a machine whose Keychain item has been deleted on purpose.
 func LoadAppCredentials(accountID string) (*AppCredentials, error) {
-	command := exec.Command("/usr/bin/security", "find-generic-password",
+	command := exec.Command(securityTool, "find-generic-password",
 		"-a", accountID, "-s", keychainService, "-w")
 	output, err := command.Output()
 	if err != nil {
@@ -67,7 +71,7 @@ func LoadAppCredentials(accountID string) (*AppCredentials, error) {
 // ForgetAppCredentials removes the stored key. Uninstalling should not leave
 // a working AWS credential behind on a machine that no longer runs this.
 func ForgetAppCredentials(accountID string) error {
-	command := exec.Command("/usr/bin/security", "delete-generic-password",
+	command := exec.Command(securityTool, "delete-generic-password",
 		"-a", accountID, "-s", keychainService)
 	if output, err := command.CombinedOutput(); err != nil {
 		if strings.Contains(string(output), "could not be found") {

@@ -19,6 +19,9 @@ import (
 // rather than a LaunchDaemon. Everything else — the deploy, the sudoers rule,
 // /etc/wireguard — is the same as on macOS.
 
+// tunnelTools is tunnel.Tools, which only Linux has, for the tests.
+var tunnelTools = tunnel.Tools
+
 // HasApp is whether this platform has the menu bar app.
 const HasApp = false
 
@@ -80,12 +83,12 @@ func loadSupervisor(asRoot bool) error {
 	}
 	for _, step := range steps {
 		if asRoot {
-			if result := sys.Run(step[0], step[1:]...); !result.OK() {
+			if result := run(step[0], step[1:]...); !result.OK() {
 				return fmt.Errorf("%s: %s", strings.Join(step, " "), result.Output)
 			}
 			continue
 		}
-		if sys.RunInteractive("/usr/bin/sudo", step...) != 0 {
+		if runInteractive("/usr/bin/sudo", step...) != 0 {
 			return fmt.Errorf("%s failed", strings.Join(step, " "))
 		}
 	}
@@ -94,18 +97,18 @@ func loadSupervisor(asRoot bool) error {
 
 func unloadSupervisor(asRoot bool) {
 	if asRoot {
-		sys.Run("systemctl", "disable", "--now", SupervisorUnit)
+		run("systemctl", "disable", "--now", SupervisorUnit)
 		return
 	}
-	sys.RunInteractive("/usr/bin/sudo", "systemctl", "disable", "--now", SupervisorUnit)
+	runInteractive("/usr/bin/sudo", "systemctl", "disable", "--now", SupervisorUnit)
 }
 
 func supervisorState() string {
-	return strings.TrimSpace(sys.Run("systemctl", "is-active", SupervisorUnit).Output)
+	return strings.TrimSpace(run("systemctl", "is-active", SupervisorUnit).Output)
 }
 
 func supervisorLog(lines int) string {
-	if log := sys.Run("journalctl", "-u", SupervisorUnit, "-n", strconv.Itoa(lines),
+	if log := run("journalctl", "-u", SupervisorUnit, "-n", strconv.Itoa(lines),
 		"--no-pager", "-o", "cat"); log.OK() {
 		return log.Output
 	}
@@ -113,7 +116,7 @@ func supervisorLog(lines int) string {
 }
 
 func operatingSystem() (string, string) {
-	content, err := os.ReadFile("/etc/os-release")
+	content, err := os.ReadFile(onDisk("/etc/os-release"))
 	if err != nil {
 		return "OS", ""
 	}
@@ -155,14 +158,14 @@ func removeApp() {}
 func Prerequisites(interactive bool) string {
 	ui.Step("Checking prerequisites")
 
-	if missing := tunnel.Tools(); len(missing) > 0 {
-		ui.Fail("Missing %s. On Debian: sudo apt install wireguard-tools iproute2",
+	if missing := tunnelTools(); len(missing) > 0 {
+		fail("Missing %s. On Debian: sudo apt install wireguard-tools iproute2",
 			strings.Join(missing, " and "))
 	}
 	// Loaded on demand by `ip link add … type wireguard`, so its absence from
 	// /sys/module is only a problem when modinfo cannot find it either.
-	if !sys.Exists("/sys/module/wireguard") && !sys.Run("modinfo", "wireguard").OK() {
-		ui.Fail("The wireguard kernel module is not available. Debian's stock kernel has it; " +
+	if !sys.Exists(onDisk("/sys/module/wireguard")) && !run("modinfo", "wireguard").OK() {
+		fail("The wireguard kernel module is not available. Debian's stock kernel has it; " +
 			"a container or a custom kernel may not.")
 	}
 	ui.Done("Kernel WireGuard, wg and ip present")

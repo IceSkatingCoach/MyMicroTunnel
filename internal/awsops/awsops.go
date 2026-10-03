@@ -256,6 +256,13 @@ func WriteProfile(profile, accessKeyID, secretAccessKey, region string) error {
 
 // --- CloudFormation --------------------------------------------------------
 
+// How long each wait loop sleeps between asking. Variables only so tests do
+// not spend minutes asleep.
+var (
+	changeSetPollInterval = 5 * time.Second
+	pollInterval          = 10 * time.Second
+)
+
 func (c *Client) stackExists(ctx context.Context, name string) (bool, error) {
 	out, err := c.CFN.DescribeStacks(ctx, &cloudformation.DescribeStacksInput{StackName: aws.String(name)})
 	if err != nil {
@@ -423,7 +430,7 @@ func (c *Client) waitForChangeSet(ctx context.Context, stackName, changeSetName 
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(changeSetPollInterval):
 		}
 	}
 	return false, errors.New("timed out waiting for the change set")
@@ -464,7 +471,7 @@ func (c *Client) waitForStack(ctx context.Context, name string, onProgress func(
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(pollInterval):
 		}
 	}
 	return errors.New("timed out waiting for the stack")
@@ -559,7 +566,7 @@ func (c *Client) DeleteStack(ctx context.Context, name string) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(pollInterval):
 		}
 	}
 	return errors.New("timed out waiting for the stack to delete")
@@ -580,7 +587,7 @@ func (c *Client) WaitForParameter(ctx context.Context, name string, timeout time
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
-		case <-time.After(10 * time.Second):
+		case <-time.After(pollInterval):
 		}
 	}
 	return "", fmt.Errorf("the gateway never published %s", name)

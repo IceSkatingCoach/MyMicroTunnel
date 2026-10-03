@@ -4,11 +4,11 @@ name: CI
 # Runs on macOS because half of what this repository ships is a Swift app and a
 # signed installer package, and neither of those can be built anywhere else.
 #
-# The Go tests' results and coverage from both platforms, and govulncheck's
-# findings, are also published to https://howarewedoing.maragato.ca with
-# history and regression graphs (cmd/quality). The quality job fails on any
-# failed test, and on coverage or test count falling against the last passing
-# main build.
+# The Go tests' results and coverage from both platforms, the end-to-end
+# suite's results, and govulncheck's findings, are also published to
+# https://howarewedoing.maragato.ca with history and regression graphs
+# (cmd/quality). The quality job fails on any failed test, and on coverage or
+# test count falling against the last passing main build.
 
 on:
   push:
@@ -293,11 +293,56 @@ jobs:
           path: quality/
           retention-days: 14
 
+  # The built command against an emulated AWS account (test/e2e): the real
+  # template deployed by the real installer, two workstations joining it, one
+  # retired, and uninstall taking it all down. A runner is a throwaway machine,
+  # so uninstall's sudo is allowed to run here.
+  e2e:
+    name: End to end (emulated AWS)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: test/e2e/requirements.txt
+
+      - name: Install moto and the WireGuard tools
+        # The installer checks for wg and ip before it deploys anything.
+        run: |
+          pip install --disable-pip-version-check -r test/e2e/requirements.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wireguard-tools iproute2
+
+      - name: End to end
+        env:
+          MMT_E2E_PYTHON: python
+          MMT_E2E_DISPOSABLE: '1'
+        run: |
+          mkdir -p "$QUALITY_DIR"
+          go test -tags e2e -count=1 -json ./test/e2e/ \
+            | tee "$QUALITY_DIR/e2e-test.json" | jq -rj 'select(.Action == "output").Output'
+
+      - name: Keep the test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-e2e
+          path: quality/
+          retention-days: 14
+
   # Runs even when the tests failed, so a red build is published too. A
-  # platform whose tests never wrote a report counts as failed tests.
+  # suite whose tests never wrote a report counts as failed tests.
   quality:
     name: Build quality
-    needs: [go, linux, vulnerabilities]
+    needs: [go, linux, e2e, vulnerabilities]
     if: always()
     runs-on: ubuntu-latest
     permissions:

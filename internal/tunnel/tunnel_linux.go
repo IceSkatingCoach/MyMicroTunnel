@@ -17,6 +17,10 @@ import (
 // from wireguard-tools, and carries the logical name itself: unlike a utun, a
 // Linux interface can be called wg0.
 
+// sysClassNet is where the kernel describes its interfaces; a variable so the
+// tests can describe some of their own.
+var sysClassNet = "/sys/class/net"
+
 // Device returns the interface when it exists, or "" when it is not up.
 func Device(name string) string {
 	if name == "" {
@@ -24,7 +28,7 @@ func Device(name string) string {
 	}
 	// Only a WireGuard interface counts. An unrelated wg0 — a hand-made
 	// wg-quick tunnel, say — is not this product's to reconfigure.
-	kind, err := os.ReadFile(filepath.Join("/sys/class/net", name, "uevent"))
+	kind, err := os.ReadFile(filepath.Join(sysClassNet, name, "uevent"))
 	if err != nil || !strings.Contains(string(kind), "DEVTYPE=wireguard") {
 		return ""
 	}
@@ -70,7 +74,7 @@ func Up(options Options) error {
 // setconf hands the configuration to `wg` on stdin, so the private key is
 // never written to a second file.
 func setconf(device string, config Config) error {
-	command := exec.Command(wgTool(), "setconf", device, "/dev/stdin")
+	command := execCommand(wgTool(), "setconf", device, "/dev/stdin")
 	command.Stdin = strings.NewReader(SetConf(config))
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("configuring %s: %w\n%s", device, err, strings.TrimSpace(string(output)))
@@ -111,7 +115,7 @@ func Report(name string) (Status, error) {
 	if Device(name) == "" {
 		return Status{}, nil
 	}
-	output, err := exec.Command(wgTool(), "show", name, "dump").CombinedOutput()
+	output, err := execCommand(wgTool(), "show", name, "dump").CombinedOutput()
 	if err != nil {
 		return Status{}, fmt.Errorf("wg show %s: %w\n%s", name, err, strings.TrimSpace(string(output)))
 	}
@@ -144,7 +148,7 @@ func AddressPresent(address string) bool {
 }
 
 func ip(args ...string) error {
-	output, err := exec.Command(ipTool(), args...).CombinedOutput()
+	output, err := execCommand(ipTool(), args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("ip %s: %w\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}

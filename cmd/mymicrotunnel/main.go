@@ -188,7 +188,7 @@ func runInstall(args []string) {
 
 	settings, resolveErr := settingsForRun(*vpnProfile, *settingsPath, setup.Stage(*stage), typed)
 	if resolveErr != nil {
-		ui.Fail("%v", resolveErr)
+		fail("%v", resolveErr)
 	}
 
 	// A flag that was actually typed wins over whatever the settings file
@@ -203,7 +203,7 @@ func runInstall(args []string) {
 		// One flag, two fields: everything downstream reads them separately.
 		mapping, err := setup.ParsePortMapping(*servicePort)
 		if err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		settings.ServicePort = strconv.Itoa(int(mapping.Local))
 		settings.PublishedPort = strconv.Itoa(int(mapping.Published))
@@ -232,7 +232,7 @@ func runInstall(args []string) {
 	if typed["tcp-ports"] {
 		mappings, err := setup.ParsePortMappings(*tcpPorts)
 		if err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		settings.TcpPorts = nil
 		for _, mapping := range mappings {
@@ -268,7 +268,7 @@ func runInstall(args []string) {
 	if settings.InterfaceName == "" {
 		settings.InterfaceName = setup.NextFreeInterface(setup.TakenInterfaces(settings.ProfileName))
 		if settings.InterfaceName == "" {
-			ui.Fail("Every WireGuard interface name is taken; remove a profile first.")
+			fail("Every WireGuard interface name is taken; remove a profile first.")
 		}
 	}
 
@@ -277,8 +277,8 @@ func runInstall(args []string) {
 	// The privileged stage does nothing else: it writes the root-owned files
 	// and exits, so the authorisation dialog covers as little as possible.
 	if setup.Stage(*stage) == setup.StageRoot {
-		if os.Geteuid() != 0 {
-			ui.Fail("The root stage must run as root.")
+		if geteuid() != 0 {
+			fail("The root stage must run as root.")
 		}
 		// Prefer the name captured while still unprivileged.
 		owner := settings.Username
@@ -286,10 +286,10 @@ func runInstall(args []string) {
 			owner = setup.CurrentUsername()
 		}
 		if owner == "root" {
-			ui.Fail("Refusing to write a sudoers rule owned by root: it would grant the actual user nothing.")
+			fail("Refusing to write a sudoers rule owned by root: it would grant the actual user nothing.")
 		}
-		if err := setup.WriteRootFiles(settings, owner, true); err != nil {
-			ui.Fail("%v", err)
+		if err := writeRootFiles(settings, owner, true); err != nil {
+			fail("%v", err)
 		}
 		ui.Done("Tunnel configuration and sudoers rule written")
 		return
@@ -301,14 +301,14 @@ func runInstall(args []string) {
 		fmt.Println("USD 26/month, and asks for your password to write root-owned files.")
 	}
 
-	setup.Prerequisites(interactive)
+	prerequisites(interactive)
 
 	runDeploy := setup.Stage(*stage) == setup.StageAll || setup.Stage(*stage) == setup.StageDeploy
 	runFinish := setup.Stage(*stage) == setup.StageAll || setup.Stage(*stage) == setup.StageFinish
 
 	if runDeploy {
 		if settings.DomainName == "" && interactive && !*asJSON {
-			settings.DomainName = ui.Ask("Public hostname this deployment should serve", "")
+			settings.DomainName = ask("Public hostname this deployment should serve", "")
 		}
 
 		client := resolveClient(ctx, &settings, interactive, *accessKeyID, *secretAccessKey)
@@ -317,21 +317,21 @@ func runInstall(args []string) {
 		// come from the profile rather than from a flag, and the stack name
 		// from the account.
 		if err := settings.Validate(); err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		// Checked before anything is deployed: two profiles sharing an
 		// interface or a tunnel address both look installed and only one of
 		// them works.
 		if err := settings.ConflictsWithOtherProfiles(); err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		// And against the networks this Mac is attached to right now. A tunnel
 		// that claims the LAN it is sitting on comes up and takes the LAN away.
 		if err := settings.ConflictsWithLocalNetworks(); err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 
-		setup.Discover(ctx, client, &settings)
+		discover(ctx, client, &settings)
 
 		if interactive && !*asJSON {
 			fmt.Println("\n  About to deploy:")
@@ -348,25 +348,25 @@ func runInstall(args []string) {
 			if settings.IdleTimeoutMinutes > 0 {
 				fmt.Printf("    idle      off after %d minutes with no traffic\n", settings.IdleTimeoutMinutes)
 			}
-			if !ui.Confirm("Proceed?", true) {
-				ui.Fail("Cancelled.")
+			if !confirm("Proceed?", true) {
+				fail("Cancelled.")
 			}
 		}
 
 		clientPublicKey := *clientPublicKeyFlag
 		if clientPublicKey == "" {
-			clientPublicKey = setup.EnsureClientKey(&settings, interactive)
+			clientPublicKey = ensureClientKey(&settings, interactive)
 		} else {
 			ui.Step("WireGuard client key")
 			ui.Done("Using the key supplied on the command line")
 		}
 
-		setup.Deploy(ctx, client, &settings)
-		setup.RegisterWorkstation(ctx, client, settings, clientPublicKey)
+		deploy(ctx, client, &settings)
+		registerWorkstation(ctx, client, settings, clientPublicKey)
 
 		if *settingsPath != "" {
 			if err := settings.Write(*settingsPath); err != nil {
-				ui.Fail("Could not save settings to %s: %v", *settingsPath, err)
+				fail("Could not save settings to %s: %v", *settingsPath, err)
 			}
 		}
 		// Recorded under the profile as well, so `peers`, `wake`, `diagnose`
@@ -393,8 +393,8 @@ func runInstall(args []string) {
 		}
 
 		ui.Step("Writing the tunnel configuration and sudoers rule")
-		if err := setup.WriteRootFiles(settings, setup.CurrentUsername(), false); err != nil {
-			ui.Fail("%v", err)
+		if err := writeRootFiles(settings, setup.CurrentUsername(), false); err != nil {
+			fail("%v", err)
 		}
 		ui.Done("Written")
 	}
@@ -405,7 +405,7 @@ func runInstall(args []string) {
 
 	ui.Step("Writing the app configuration")
 	if err := setup.WriteAppConfig(settings); err != nil {
-		ui.Fail("Could not write the app configuration: %v", err)
+		fail("Could not write the app configuration: %v", err)
 	}
 	// An install ends with the tunnel up, so that is what the supervisor should
 	// restore after a reboot until the user says otherwise.
@@ -417,17 +417,17 @@ func runInstall(args []string) {
 	}
 	ui.Done("%s", setup.ProfileConfigPath(settings.ProfileName))
 
-	setup.InstallApp(setup.RepoRoot())
+	installApp(setup.RepoRoot())
 
-	if setup.HasApp && (*loginItem || (interactive && !*asJSON && ui.Confirm("Open the app automatically at login?", true))) {
+	if setup.HasApp && (*loginItem || (interactive && !*asJSON && confirm("Open the app automatically at login?", true))) {
 		ui.Step("Login item")
-		setup.RegisterLoginItem()
+		registerLoginItem()
 	}
 
 	client := resolveClient(ctx, &settings, false, *accessKeyID, *secretAccessKey)
-	setup.Verify(ctx, client, settings)
+	verify(ctx, client, settings)
 
-	setup.OpenApp()
+	openApp()
 
 	if !*asJSON {
 		fmt.Println("\n✓ Installed.")
@@ -554,7 +554,7 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 	// Typed credentials still win: that is how a revoked or wrong key is
 	// replaced without first working out where the old one is kept.
 	if accessKeyID == "" && settings.AccountID != "" {
-		if stored, err := awsops.LoadAppCredentials(settings.AccountID); err == nil && stored != nil {
+		if stored, err := loadAppCredentials(settings.AccountID); err == nil && stored != nil {
 			client, err := awsops.LoadStatic(ctx, stored.AccessKeyID, stored.SecretAccessKey, settings.Region)
 			if err == nil {
 				if identity, err := client.Identity(ctx); err == nil {
@@ -571,10 +571,10 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 			settings.Profile = "mymicrotunnel"
 		}
 		if settings.Region == "" && interactive {
-			settings.Region = ui.Ask("Region", "us-east-1")
+			settings.Region = ask("Region", "us-east-1")
 		}
 		if err := awsops.WriteProfile(settings.Profile, accessKeyID, secretAccessKey, settings.Region); err != nil {
-			ui.Fail("Could not save the credentials: %v", err)
+			fail("Could not save the credentials: %v", err)
 		}
 		ui.Done("Profile %s written to ~/.aws/credentials", settings.Profile)
 	}
@@ -582,26 +582,26 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 	if settings.Profile == "" {
 		profiles := awsops.Profiles()
 		if !interactive {
-			ui.Fail("No AWS profile given. Pass --profile, or --access-key-id with --secret-access-key.")
+			fail("No AWS profile given. Pass --profile, or --access-key-id with --secret-access-key.")
 		}
 		if len(profiles) == 0 {
-			settings.Profile = ui.Ask("Name for the new profile", "mymicrotunnel")
-			id := ui.Ask("AWS access key id", "")
+			settings.Profile = ask("Name for the new profile", "mymicrotunnel")
+			id := ask("AWS access key id", "")
 			if id == "" {
-				ui.Fail("An access key id is required.")
+				fail("An access key id is required.")
 			}
-			secret := ui.AskSecret("AWS secret access key (hidden)")
+			secret := askSecret("AWS secret access key (hidden)")
 			if secret == "" {
-				ui.Fail("A secret access key is required.")
+				fail("A secret access key is required.")
 			}
-			settings.Region = ui.Ask("Region", settings.Region)
+			settings.Region = ask("Region", settings.Region)
 			if err := awsops.WriteProfile(settings.Profile, id, secret, settings.Region); err != nil {
-				ui.Fail("Could not save the credentials: %v", err)
+				fail("Could not save the credentials: %v", err)
 			}
 			ui.Done("Profile %s written to ~/.aws/credentials", settings.Profile)
 		} else {
 			ui.Info("Existing profiles: %s", strings.Join(profiles, ", "))
-			settings.Profile = ui.Ask("Profile", profiles[0])
+			settings.Profile = ask("Profile", profiles[0])
 		}
 	}
 
@@ -613,18 +613,18 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 		if settings.Region != "" {
 			ui.Info("Using the region %s from profile %s", settings.Region, settings.Profile)
 		} else if interactive {
-			settings.Region = ui.Ask("Region", "us-east-1")
+			settings.Region = ask("Region", "us-east-1")
 		}
 	}
 
 	client, err := awsops.LoadProfile(ctx, settings.Profile, settings.Region)
 	if err != nil {
-		ui.Fail("Could not load AWS credentials: %v", err)
+		fail("Could not load AWS credentials: %v", err)
 	}
 
 	identity, err := client.Identity(ctx)
 	if err != nil {
-		ui.Fail("%s", awsops.ExplainCredentialFailure(settings.Profile, err))
+		fail("%s", awsops.ExplainCredentialFailure(settings.Profile, err))
 	}
 	if awsops.IsSSOProfile(settings.Profile) {
 		ui.Info("%s signs in through IAM Identity Center; its session will expire.", settings.Profile)
@@ -639,9 +639,9 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 	// app user simply carries on with what it has.
 	if account, err := client.AccountID(ctx); err == nil {
 		settings.AccountID = account
-		if stored, err := awsops.LoadAppCredentials(account); err == nil && stored != nil {
+		if stored, err := loadAppCredentials(account); err == nil && stored != nil {
 			ui.Done("Using the application's own AWS credentials")
-		} else if minted, err := awsops.EnsureAppCredentials(ctx, client, account); err != nil {
+		} else if minted, err := ensureAppCredentials(ctx, client, account); err != nil {
 			ui.Warn("Could not create the application's own AWS credentials: %v", err)
 			ui.Info("Carrying on with %s. Re-run setup to try again.", settings.Profile)
 		} else if minted != nil {
@@ -666,7 +666,7 @@ func resolveClient(ctx context.Context, settings *setup.Settings, interactive bo
 			ui.Info("Deploying as %s", settings.StackName)
 		}
 	} else if settings.StackName == "" {
-		ui.Fail("Could not read the account id, so the default stack name cannot be built: %v.\n"+
+		fail("Could not read the account id, so the default stack name cannot be built: %v.\n"+
 			"  Pass --stack with a name of your own.", err)
 	}
 
@@ -715,23 +715,23 @@ func runUninstall(args []string) {
 	if !*nonInteractive && !*asJSON {
 		fmt.Println("MyMicroTunnel uninstaller")
 		if !options.DeleteKeys {
-			options.DeleteKeys = ui.Confirm("Also delete /etc/wireguard (tunnel config and private key)?", false)
+			options.DeleteKeys = confirm("Also delete /etc/wireguard (tunnel config and private key)?", false)
 		}
 		if !options.DeleteStack {
-			options.DeleteStack = ui.Confirm("Also delete the AWS CloudFormation stack?", false)
+			options.DeleteStack = confirm("Also delete the AWS CloudFormation stack?", false)
 		}
 		if options.DeleteStack {
-			options.StackName = ui.Ask("Stack name", options.StackName)
-			options.Profile = ui.Ask("AWS profile", options.Profile)
-			options.Region = ui.Ask("Region", options.Region)
-			if !ui.Confirm(fmt.Sprintf("Delete %s in %s? This takes the hostname down for every workstation.",
+			options.StackName = ask("Stack name", options.StackName)
+			options.Profile = ask("AWS profile", options.Profile)
+			options.Region = ask("Region", options.Region)
+			if !confirm(fmt.Sprintf("Delete %s in %s? This takes the hostname down for every workstation.",
 				options.StackName, options.Region), false) {
 				options.DeleteStack = false
 			}
 		}
 	}
 
-	setup.Uninstall(ctx, options)
+	uninstall(ctx, options)
 
 	if !*asJSON {
 		fmt.Println("\n✓ Uninstalled.")
@@ -755,20 +755,20 @@ func runReload(args []string) {
 	flags := flag.NewFlagSet("reload", flag.ExitOnError)
 	_ = flags.Parse(args)
 
-	if os.Geteuid() != 0 {
-		ui.Fail("Reloading the tunnels needs root; the package's postinstall runs this.")
+	if geteuid() != 0 {
+		fail("Reloading the tunnels needs root; the package's postinstall runs this.")
 	}
 
 	for _, profile := range setup.AllProfileSettings() {
-		if profile.InterfaceName == "" || !tunnel.IsUp(profile.InterfaceName) {
+		if profile.InterfaceName == "" || !tunnelIsUp(profile.InterfaceName) {
 			continue
 		}
 		fmt.Printf("re-raising %s (%s)\n", profile.InterfaceName, profile.ProfileName)
-		if err := tunnel.Down(profile.InterfaceName); err != nil {
+		if err := tunnelDown(profile.InterfaceName); err != nil {
 			fmt.Printf("  could not drop %s: %v\n", profile.InterfaceName, err)
 			continue
 		}
-		if err := setup.RaiseTunnel(profile.InterfaceName, profile.TunnelConfigPath()); err != nil {
+		if err := raiseTunnel(profile.InterfaceName, profile.TunnelConfigPath()); err != nil {
 			// Reported, not fatal: the supervisor puts a supervised tunnel
 			// back within its next pass, and a profile nobody supervises is
 			// one the menu bar can raise.
@@ -788,11 +788,11 @@ func runPubkey(args []string) {
 
 	content, err := os.ReadFile(path)
 	if err != nil {
-		ui.Fail("Could not read %s: %v", path, err)
+		fail("Could not read %s: %v", path, err)
 	}
 	public, err := tunnel.PublicKey(strings.TrimSpace(string(content)))
 	if err != nil {
-		ui.Fail("%s does not hold a WireGuard key: %v", path, err)
+		fail("%s does not hold a WireGuard key: %v", path, err)
 	}
 	fmt.Println(public)
 }
@@ -874,18 +874,18 @@ func runPeers(args []string) {
 		resolvedRegion = awsops.ProfileRegion(ctx, resolvedProfile)
 	}
 	if resolvedStack == "" {
-		ui.Fail("No stack: profile %q is not installed here, so pass --stack.", *vpnProfile)
+		fail("No stack: profile %q is not installed here, so pass --stack.", *vpnProfile)
 	}
 
 	client, err := awsops.LoadProfile(ctx, resolvedProfile, resolvedRegion)
 	if err != nil {
-		ui.Fail("Could not load AWS credentials: %v", err)
+		fail("Could not load AWS credentials: %v", err)
 	}
 	settings := setup.Settings{StackName: resolvedStack}
 
 	if *remove != "" {
 		if err := client.RemovePeer(ctx, settings.PeersParameter(), *remove); err != nil {
-			ui.Fail("Could not remove %s: %v", *remove, err)
+			fail("Could not remove %s: %v", *remove, err)
 		}
 		outputs, err := client.StackOutputs(ctx, resolvedStack)
 		if err == nil && outputs["TargetGroupArn"] != "" {
@@ -915,7 +915,7 @@ func runPeers(args []string) {
 
 	peers, err := client.Peers(ctx, settings.PeersParameter())
 	if err != nil {
-		ui.Fail("Could not read %s: %v", settings.PeersParameter(), err)
+		fail("Could not read %s: %v", settings.PeersParameter(), err)
 	}
 	if len(peers) == 0 {
 		fmt.Printf("No workstation is registered for %s.\n", resolvedStack)
@@ -951,7 +951,7 @@ func runSupervise(args []string) {
 		*profilesDir = setup.ProfilesDir()
 	}
 
-	setup.Supervise(setup.SuperviseOptions{
+	superviseProfiles(setup.SuperviseOptions{
 		ProfilesDir:   *profilesDir,
 		StatePath:     *statePath,
 		InterfaceName: *interfaceName,
@@ -992,7 +992,7 @@ func runProfile(args []string) {
 		for _, name := range names {
 			s := byName[name]
 			state := "down"
-			if tunnel.IsUp(s.InterfaceName) || tunnel.AddressPresent(s.ClientAddress) {
+			if tunnelIsUp(s.InterfaceName) || tunnelAddressPresent(s.ClientAddress) {
 				state = "up"
 			}
 			fmt.Printf("%-16s %-8s %-16s %-14s %s\n",
@@ -1004,12 +1004,12 @@ func runProfile(args []string) {
 
 	case "show":
 		if flags.NArg() < 2 {
-			ui.Fail("Usage: mymicrotunnel profile show NAME")
+			fail("Usage: mymicrotunnel profile show NAME")
 		}
 		name := flags.Arg(1)
 		s, err := setup.LoadProfileSettings(name)
 		if err != nil {
-			ui.Fail("No profile called %q: %v", name, err)
+			fail("No profile called %q: %v", name, err)
 		}
 		fmt.Printf("profile        %s\n", s.ProfileName)
 		fmt.Printf("stack          %s in %s\n", s.StackName, s.Region)
@@ -1026,7 +1026,7 @@ func runProfile(args []string) {
 		fmt.Printf("supervised     %t\n", s.Supervise)
 
 	default:
-		ui.Fail("Unknown profile command %q. Use list, show or save.", action)
+		fail("Unknown profile command %q. Use list, show or save.", action)
 	}
 }
 
@@ -1081,7 +1081,7 @@ func runProfileSave(args []string) {
 	if typed["port"] {
 		mapping, err := setup.ParsePortMapping(*servicePort)
 		if err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		settings.ServicePort = strconv.Itoa(int(mapping.Local))
 		settings.PublishedPort = strconv.Itoa(int(mapping.Published))
@@ -1089,7 +1089,7 @@ func runProfileSave(args []string) {
 	if typed["tcp-ports"] {
 		mappings, err := setup.ParsePortMappings(*tcpPorts)
 		if err != nil {
-			ui.Fail("%v", err)
+			fail("%v", err)
 		}
 		settings.TcpPorts = nil
 		for _, mapping := range mappings {
@@ -1108,7 +1108,7 @@ func runProfileSave(args []string) {
 	settings.AlignAddressesToVpnCidr()
 
 	if err := setup.SaveProfileSettings(settings); err != nil {
-		ui.Fail("Could not save the profile: %v", err)
+		fail("Could not save the profile: %v", err)
 	}
 	fmt.Println(setup.ProfileSettingsPath(settings.ProfileName))
 }
@@ -1129,13 +1129,13 @@ func runWake(args []string) {
 
 	settings, err := setup.LoadProfileSettings(*vpnProfile)
 	if err != nil {
-		ui.Fail("No profile called %q: %v", *vpnProfile, err)
+		fail("No profile called %q: %v", *vpnProfile, err)
 	}
 
 	ctx := context.Background()
 	client, err := awsops.LoadProfile(ctx, settings.Profile, settings.Region)
 	if err != nil {
-		ui.Fail("Could not load AWS credentials: %v", err)
+		fail("Could not load AWS credentials: %v", err)
 	}
 
 	report := func(message string) {
@@ -1149,7 +1149,7 @@ func runWake(args []string) {
 		Wait:       *wait,
 		OnProgress: report,
 	}); err != nil {
-		ui.Fail("Could not wake the gateway for %s: %v", *vpnProfile, err)
+		fail("Could not wake the gateway for %s: %v", *vpnProfile, err)
 	}
 }
 
@@ -1159,7 +1159,7 @@ func runWake(args []string) {
 // something the rule did not mean to allow.
 func runTunnel(args []string) {
 	if len(args) < 1 {
-		ui.Fail("Usage: mymicrotunnel tunnel up|down|status [interface] [--config PATH]")
+		fail("Usage: mymicrotunnel tunnel up|down|status [interface] [--config PATH]")
 	}
 
 	interfaceName := setup.Defaults().InterfaceName
@@ -1178,20 +1178,20 @@ func runTunnel(args []string) {
 
 	switch args[0] {
 	case "up":
-		if os.Geteuid() != 0 {
-			ui.Fail("Raising the tunnel needs root.")
+		if geteuid() != 0 {
+			fail("Raising the tunnel needs root.")
 		}
-		if err := setup.RaiseTunnel(interfaceName, *configPath); err != nil {
-			ui.Fail("%v", err)
+		if err := raiseTunnel(interfaceName, *configPath); err != nil {
+			fail("%v", err)
 		}
-		fmt.Printf("%s is up on %s\n", interfaceName, tunnel.Device(interfaceName))
+		fmt.Printf("%s is up on %s\n", interfaceName, tunnelDevice(interfaceName))
 
 	case "down":
-		if os.Geteuid() != 0 {
-			ui.Fail("Dropping the tunnel needs root.")
+		if geteuid() != 0 {
+			fail("Dropping the tunnel needs root.")
 		}
-		if err := tunnel.Down(interfaceName); err != nil {
-			ui.Fail("%v", err)
+		if err := tunnelDown(interfaceName); err != nil {
+			fail("%v", err)
 		}
 		fmt.Printf("%s is down\n", interfaceName)
 
@@ -1199,7 +1199,7 @@ func runTunnel(args []string) {
 		reportTunnel(interfaceName, setup.InstalledClientAddress())
 
 	default:
-		ui.Fail("Unknown tunnel command %q. Use up, down or status.", args[0])
+		fail("Unknown tunnel command %q. Use up, down or status.", args[0])
 	}
 }
 
@@ -1211,17 +1211,17 @@ func runTunnel(args []string) {
 // from one it is not allowed to look at — and reporting the second as the first
 // is how somebody ends up debugging a tunnel that was working all along.
 func reportTunnel(interfaceName, address string) {
-	device := tunnel.Device(interfaceName)
+	device := tunnelDevice(interfaceName)
 
 	// On Linux the interface is visible to everyone, but asking it anything
 	// needs root; on macOS the device itself is hidden. Either way an
 	// unprivileged caller can know the tunnel is up and no more.
-	status, err := tunnel.Report(interfaceName)
-	if device != "" && err != nil && os.Geteuid() != 0 {
+	status, err := tunnelReport(interfaceName)
+	if device != "" && err != nil && geteuid() != 0 {
 		device = ""
 	}
 	if device == "" {
-		if tunnel.AddressPresent(address) {
+		if tunnelAddressPresent(address) {
 			fmt.Printf("%s is up (%s), but reading its handshake needs root:\n", interfaceName, address)
 			fmt.Printf("  sudo %s tunnel status %s\n", setup.CommandPath, interfaceName)
 			return
@@ -1230,7 +1230,7 @@ func reportTunnel(interfaceName, address string) {
 		return
 	}
 	if err != nil {
-		ui.Fail("%v", err)
+		fail("%v", err)
 	}
 	fmt.Printf("%s is up on %s\n", interfaceName, device)
 	for _, peer := range status.Peers {
@@ -1262,7 +1262,7 @@ func runDiagnose(args []string) {
 	_ = flags.Parse(args)
 
 	stored, _ := setup.LoadProfileSettings(*vpnProfile)
-	report := setup.Diagnose(context.Background(), setup.DiagnoseOptions{
+	report := diagnose(context.Background(), setup.DiagnoseOptions{
 		ProfileName: *vpnProfile,
 		StackName:   firstNonEmpty(*stackName, stored.StackName),
 		Profile:     firstNonEmpty(*profile, stored.Profile, "default"),
@@ -1275,7 +1275,7 @@ func runDiagnose(args []string) {
 		return
 	}
 	if err := os.WriteFile(*output, []byte(report), 0o644); err != nil {
-		ui.Fail("Could not write %s: %v", *output, err)
+		fail("Could not write %s: %v", *output, err)
 	}
 	fmt.Printf("Written to %s\n", *output)
 }
@@ -1294,8 +1294,8 @@ func runStatus(args []string) {
 
 	// Asking the interface needs root, because /var/run/wireguard is 0700.
 	// Without it, the address on an interface is the most that can be known.
-	status, err := tunnel.Report(interfaceName)
-	up := tunnel.IsUp(interfaceName) || tunnel.AddressPresent(address)
+	status, err := tunnelReport(interfaceName)
+	up := tunnelIsUp(interfaceName) || tunnelAddressPresent(address)
 	connected := err == nil && status.Connected(time.Now())
 
 	if *asJSON {
@@ -1305,7 +1305,7 @@ func runStatus(args []string) {
 			"interface": interfaceName,
 			"address":   address,
 			"profile":   *vpnProfile,
-			"device":    tunnel.Device(interfaceName),
+			"device":    tunnelDevice(interfaceName),
 			"version":   version.String(),
 		})
 		return

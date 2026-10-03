@@ -653,7 +653,7 @@ type result struct {
 }
 
 func run(name string, args ...string) result {
-	command := exec.Command(name, args...)
+	command := execCommand(name, args...)
 	output, err := command.CombinedOutput()
 	code := 0
 	if err != nil {
@@ -665,7 +665,7 @@ func run(name string, args ...string) result {
 }
 
 func runIn(directory, name string, args ...string) {
-	command := exec.Command(name, args...)
+	command := execCommand(name, args...)
 	command.Dir = directory
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
@@ -696,9 +696,16 @@ func step(format string, args ...any) { fmt.Printf("\n▸ "+format+"\n", args...
 func done(format string, args ...any) { fmt.Printf("  ✓ "+format+"\n", args...) }
 func warn(format string, args ...any) { fmt.Printf("  ! "+format+"\n", args...) }
 
+// exit and execCommand are variables so the tests can watch a failure and stand
+// in for the tools without ending the process or touching the machine.
+var (
+	exit        = os.Exit
+	execCommand = exec.Command
+)
+
 func fail(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "\n✗ "+format+"\n", args...)
-	os.Exit(1)
+	exit(1)
 }
 
 func must(err error) {
