@@ -14,6 +14,13 @@ func answerSupervisorState(fake *fakeMachine, state, log string) {
 	fake.reply("journalctl -u "+SupervisorUnit+" -n 12", log)
 }
 
+// answerSupervisorUnloaded makes systemd report the unit stopped, and returns how the
+// report says so: systemctl answers "inactive" rather than nothing.
+func answerSupervisorUnloaded(fake *fakeMachine) string {
+	fake.refuse("systemctl is-active", "inactive\n")
+	return "state                  inactive"
+}
+
 func stubTools(t *testing.T, missing ...string) {
 	t.Helper()
 	original := tunnelTools

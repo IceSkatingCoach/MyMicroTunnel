@@ -54,6 +54,7 @@ jobs:
       - name: go test
         # -json for the quality report; jq turns it back into the usual log.
         run: |
+          set -o pipefail
           mkdir -p "$QUALITY_DIR"
           go test -race -json -coverprofile="$QUALITY_DIR/macos.cover" ./... \
             | tee "$QUALITY_DIR/macos-test.json" | jq -rj 'select(.Action == "output").Output'
@@ -101,6 +102,7 @@ jobs:
       - name: go test
         # -json for the quality report; jq turns it back into the usual log.
         run: |
+          set -o pipefail
           mkdir -p "$QUALITY_DIR"
           go test -race -json -coverprofile="$QUALITY_DIR/linux.cover" ./... \
             | tee "$QUALITY_DIR/linux-test.json" | jq -rj 'select(.Action == "output").Output'
@@ -326,6 +328,7 @@ jobs:
           MMT_E2E_PYTHON: python
           MMT_E2E_DISPOSABLE: '1'
         run: |
+          set -o pipefail
           mkdir -p "$QUALITY_DIR"
           go test -tags e2e -count=1 -json ./test/e2e/ \
             | tee "$QUALITY_DIR/e2e-test.json" | jq -rj 'select(.Action == "output").Output'

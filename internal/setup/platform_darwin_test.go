@@ -16,6 +16,13 @@ func answerSupervisorState(fake *fakeMachine, state, log string) {
 	fake.reply("/usr/bin/tail -n 12 "+SupervisorLogPath, log)
 }
 
+// answerSupervisorUnloaded makes launchd not know the job, and returns how the
+// report says so.
+func answerSupervisorUnloaded(fake *fakeMachine) string {
+	fake.refuse("/bin/launchctl print", "Could not find service")
+	return "loaded                 no"
+}
+
 // launchd keeps running the old definition of a job that is bootstrapped over
 // itself, so a changed store would not take effect until the next reboot.
 func TestLoadingTheSupervisorBootsOutTheOldJobFirst(t *testing.T) {

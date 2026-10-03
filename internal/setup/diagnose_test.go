@@ -434,8 +434,9 @@ func TestTheSupervisorSectionNarratesItsLastDecisions(t *testing.T) {
 	}
 
 	fake.place(t, SupervisorPath, "job", 0o644)
+	unloaded := answerSupervisorUnloaded(fake)
 	text := reportOf(func(r *Report) { diagnoseSupervisor(r, DefaultProfileName) })
-	if !strings.Contains(text, "loaded                 no") || !strings.Contains(text, "desired state          not recorded") {
+	if !strings.Contains(text, unloaded) || !strings.Contains(text, "desired state          not recorded") {
 		t.Errorf("an unloaded supervisor is not reported:\n%s", text)
 	}
 
